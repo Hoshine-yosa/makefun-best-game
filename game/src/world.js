@@ -4,19 +4,26 @@
 // screens should show (a popup, a sound cue) is written to the feed ring, which
 // the loop drains. Nothing here allocates after createWorld returns.
 import {
+  BLACKHOLE,
   BOLT,
   BOSS,
+  CHARGE,
   COMBO,
+  EBULLET,
   FIELD,
+  GUNSHIP,
   LIVES,
   METEOR,
   NEAR_MISS,
+  ORE,
   POOL,
   POWERUP,
   POWERUP_ORDER,
   POWERUPS,
   SHIP,
+  SHOP,
   STAR,
+  THEMES,
   WAVE,
 } from './config.js';
 
@@ -25,6 +32,9 @@ export const KIND_STAR = 1;
 export const KIND_POWERUP = 2;
 export const KIND_BOLT = 3;
 export const KIND_BOSS = 4;
+export const KIND_GUNSHIP = 5;
+export const KIND_EBULLET = 6;
+export const KIND_ORE = 7;
 
 export const EVENT_HIT = 1;
 export const EVENT_STAR = 2;
@@ -37,6 +47,9 @@ export const EVENT_SHOOT = 128;
 export const EVENT_KILL = 256;
 export const EVENT_BOSS = 512;
 export const EVENT_BOMB = 1024;
+export const EVENT_OVERHEAT = 2048;
+export const EVENT_HOLE = 4096;
+export const EVENT_ORE = 8192;
 
 function overlaps(a, b) {
   return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
@@ -60,7 +73,7 @@ export function createWorld(random) {
       active: false, kind: KIND_METEOR, sub: 'rock',
       x: 0, y: 0, width: 0, height: 0, speed: 0, vx: 0,
       spin: 0, angle: 0, counted: false, nearMissed: false,
-      hp: 1, phase: 0,
+      hp: 1, phase: 0, timer: 0, mark: 0, seq: 0,
     });
   }
   const feed = [];
@@ -76,7 +89,7 @@ export function createWorld(random) {
     meteorTimers: {},
     starTimer: 0, powerTimer: 0, powerIndex: 0,
     boss: null, bossHp: 0, bossMaxHp: 0,
-    stats: { stars: 0, near: 0, kills: 0, shots: 0, maxCombo: 0 },
+    stats: { stars: 0, near: 0, kills: 0, shots: 0, maxCombo: 0, ore: 0 },
     /** Hit-stop: fixed steps the world stays frozen after a big kill. */
     hitStop: 0,
     /** Slow-mo: seconds of game time left at 0.3x speed (the boss's death). */
@@ -89,6 +102,24 @@ export function createWorld(random) {
     killStreak: 0,
     /** Events raised by helpers that cannot reach step()'s local flags. */
     pendingEvents: 0,
+    /** Shop upgrades bought this run: fire rate, extra bolts, magnet radius. */
+    upgrades: { fire: 0, spread: 0, magnet: 0 },
+    /** One-per-visit shop flags (a life and a shield each visit at most). */
+    shopLifeBought: false,
+    shopShieldBought: false,
+    /** Gunship spawner: time to the next one, and how many this wave may send. */
+    gunshipTimer: GUNSHIP.interval,
+    gunshipsSpawned: 0,
+    /** The black hole: one per wave from wave 3, warned 2s before it opens. */
+    hole: { active: false, x: 0, y: 0, age: 0, warned: false, done: false, at: 0 },
+    /** Charge shot: 0..1.5 while held; overheat locks the guns for 2s. */
+    charge: 0,
+    overheat: 0,
+    prevFiring: false,
+    /** The wave's theme (shower / swarm / patrol / calm / boss). */
+    theme: 'shower',
+    /** Unique id handed to each bolt, so a piercing bolt never hits one target twice. */
+    boltSeq: 0,
   };
 
   function post(type, x, y, text, color) {
@@ -138,17 +169,120 @@ export function createWorld(random) {
     state.hitsThisWave = 0;
     state.killStreak = 0;
     state.pendingEvents = 0;
+    state.upgrades.fire = 0;
+    state.upgrades.spread = 0;
+    state.upgrades.magnet = 0;
+    state.shopLifeBought = false;
+    state.shopShieldBought = false;
+    state.gunshipTimer = GUNSHIP.interval;
+    state.gunshipsSpawned = 0;
+    state.hole.active = false;
+    state.hole.x = 0;
+    state.hole.y = 0;
+    state.hole.age = 0;
+    state.hole.warned = false;
+    state.hole.done = false;
+    state.hole.at = 0;
+    state.charge = 0;
+    state.overheat = 0;
+    state.prevFiring = false;
+    state.theme = 'shower';
+    state.boltSeq = 0;
     state.stats.stars = 0;
     state.stats.near = 0;
     state.stats.kills = 0;
     state.stats.shots = 0;
     state.stats.maxCombo = 0;
+    state.stats.ore = 0;
+  }
+
+  /** The wave's theme, fixed per wave number so every run plays the same. */
+  function themeForWave(wave) {
+    if (BOSS.waves.includes(wave)) return 'boss';
+    switch ((wave - 1) % 4) {
+      case 0: return 'shower';
+      case 1: return 'swarm';
+      case 2: return wave >= GUNSHIP.unlockWave ? 'patrol' : 'shower';
+      default: return 'calm';
+    }
   }
 
   /** The current score multiplier: the combo ladder, doubled while DOUBLE SCORE or FRENZY runs. */
   function multiplier() {
     const ladder = Math.min(COMBO.maxMultiplier, 1 + Math.floor(state.combo / COMBO.perStep));
     return state.doubleTimer > 0 || state.frenzyTimer > 0 ? ladder * 2 : ladder;
+  }
+
+  /** The shop catalogue with live levels, costs and buyability for this run. */
+  function shopItems() {
+    return SHOP.map((def, index) => {
+      let level = 0;
+      let maxLevel = def.costs.length;
+      let cost = def.costs[0];
+      let canBuy = false;
+      let note = '';
+      if (def.id === 'life') {
+        level = state.shopLifeBought ? 1 : 0;
+        maxLevel = 1;
+        canBuy = !state.shopLifeBought && state.lives < 5 && state.score >= cost;
+        note = state.lives >= 5 ? 'MAX LIVES' : state.shopLifeBought ? 'BOUGHT' : '';
+      } else if (def.id === 'shield') {
+        level = state.shopShieldBought ? 1 : 0;
+        maxLevel = 1;
+        canBuy = !state.shopShieldBought && !state.shield && state.score >= cost;
+        note = state.shield ? 'ACTIVE' : state.shopShieldBought ? 'BOUGHT' : '';
+      } else {
+        level = state.upgrades[def.id];
+        cost = def.costs[level];
+        canBuy = level < def.costs.length && state.score >= cost;
+        note = level >= def.costs.length ? 'MAX' : '';
+      }
+      return { index, id: def.id, name: def.name, desc: def.desc, cost, level, maxLevel, canBuy, note };
+    });
+  }
+
+  /** Buy one shop item with score. Returns false when it cannot be bought. */
+  function buyUpgrade(index) {
+    const item = shopItems()[index];
+    if (!item || !item.canBuy) return false;
+    state.score -= item.cost;
+    if (item.id === 'life') {
+      state.lives = Math.min(5, state.lives + 1);
+      state.shopLifeBought = true;
+    } else if (item.id === 'shield') {
+      state.shield = true;
+      state.shopShieldBought = true;
+    } else {
+      state.upgrades[item.id] += 1;
+    }
+    return true;
+  }
+
+  /** A new shop visit: the one-per-visit life and shield are on sale again. */
+  function openShop() {
+    state.shopLifeBought = false;
+    state.shopShieldBought = false;
+  }
+
+  /** The gun's cooldown with the RAPID FIRE upgrade (and FRENZY's own speed). */
+  function fireCooldown() {
+    const base = state.frenzyTimer > 0 ? BOLT.frenzyCooldown : BOLT.cooldown;
+    return base * 0.85 ** state.upgrades.fire;
+  }
+
+  /** The magnet's reach with the BIG MAGNET upgrade. */
+  function magnetRadius() {
+    return 280 * 1.5 ** state.upgrades.magnet;
+  }
+
+  /** One kill in a row without taking a hit; every 10th pays a bonus. */
+  function registerKill(x, y) {
+    state.killStreak += 1;
+    if (state.killStreak % 10 === 0) {
+      const streakBonus = 100 * multiplier();
+      state.score += streakBonus;
+      post('streak', x, y - 10, `STREAK x${state.killStreak}! +${streakBonus}`, '#ff2a6d');
+    }
   }
 
   function freeItem() {
@@ -160,7 +294,11 @@ export function createWorld(random) {
 
   function meteorInterval(kind) {
     const base = METEOR[kind].interval;
-    const scaled = base * 0.92 ** (state.wave - 1);
+    const theme = THEMES[state.theme];
+    let scaled = base * 0.92 ** (state.wave - 1);
+    if (theme.meteorMul) scaled *= theme.meteorMul;
+    if (kind === 'shard' && theme.shardMul) scaled *= theme.shardMul;
+    if (kind === 'boulder' && theme.boulderMul) scaled *= theme.boulderMul;
     return Math.max(0.3, scaled);
   }
 
@@ -186,6 +324,9 @@ export function createWorld(random) {
     item.nearMissed = false;
     item.hp = def.hp;
     item.phase = random.range(0, Math.PI * 2);
+    item.timer = 0;
+    item.mark = 0;
+    item.seq = 0;
   }
 
   function spawnShardAt(x, y) {
@@ -207,6 +348,9 @@ export function createWorld(random) {
     item.nearMissed = false;
     item.hp = 1;
     item.phase = random.range(0, Math.PI * 2);
+    item.timer = 0;
+    item.mark = 0;
+    item.seq = 0;
   }
 
   function spawnStar() {
@@ -227,6 +371,9 @@ export function createWorld(random) {
     item.nearMissed = false;
     item.hp = 1;
     item.phase = 0;
+    item.timer = 0;
+    item.mark = 0;
+    item.seq = 0;
   }
 
   function spawnPowerup() {
@@ -253,6 +400,9 @@ export function createWorld(random) {
     item.nearMissed = false;
     item.hp = 1;
     item.phase = 0;
+    item.timer = 0;
+    item.mark = 0;
+    item.seq = 0;
   }
 
   function spawnBoss() {
@@ -273,9 +423,87 @@ export function createWorld(random) {
     item.nearMissed = true;
     item.hp = BOSS.hp;
     item.phase = 0;
+    item.timer = 0;
+    item.mark = 0;
+    item.seq = 0;
     state.boss = item;
     state.bossHp = BOSS.hp;
     state.bossMaxHp = BOSS.hp;
+  }
+
+  function spawnGunship() {
+    const item = freeItem();
+    if (item === null) return;
+    item.active = true;
+    item.kind = KIND_GUNSHIP;
+    item.sub = 'gunship';
+    item.width = GUNSHIP.width;
+    item.height = GUNSHIP.height;
+    item.x = random.range(0, FIELD.width - GUNSHIP.width);
+    item.y = -GUNSHIP.height;
+    item.speed = GUNSHIP.speed + GUNSHIP.speedPerWave * (state.wave - 1);
+    item.vx = random.pick([-1, 1]) * random.range(10, 40);
+    item.spin = 0;
+    item.angle = 0;
+    item.counted = true;
+    item.nearMissed = true;
+    item.hp = GUNSHIP.hp;
+    item.phase = random.range(0, Math.PI * 2);
+    item.timer = random.range(0.8, GUNSHIP.fireInterval);
+    item.mark = 0;
+    item.seq = 0;
+    state.gunshipsSpawned += 1;
+  }
+
+  /** One aimed enemy bullet, fired from (x, y) at the ship's centre. `owner` is the gunship's pool index, so its bullets die with it. */
+  function spawnEnemyBullet(x, y, tx, ty, owner) {
+    const item = freeItem();
+    if (item === null) return;
+    const dx = tx - x;
+    const dy = ty - y;
+    const distance = Math.hypot(dx, dy) || 1;
+    item.active = true;
+    item.kind = KIND_EBULLET;
+    item.sub = 'ebullet';
+    item.width = EBULLET.size;
+    item.height = EBULLET.size;
+    item.x = x - EBULLET.size / 2;
+    item.y = y - EBULLET.size / 2;
+    item.speed = (dy / distance) * GUNSHIP.bulletSpeed;
+    item.vx = (dx / distance) * GUNSHIP.bulletSpeed;
+    item.spin = 0;
+    item.angle = 0;
+    item.counted = true;
+    item.nearMissed = true;
+    item.hp = 1;
+    item.phase = 0;
+    item.timer = 0;
+    item.mark = 0;
+    item.seq = owner;
+  }
+
+  /** One ore shard from a shattered boulder: slow, glowing, fades after 6s. */
+  function spawnOre(x, y) {
+    const item = freeItem();
+    if (item === null) return;
+    item.active = true;
+    item.kind = KIND_ORE;
+    item.sub = 'ore';
+    item.width = ORE.size;
+    item.height = ORE.size;
+    item.x = Math.max(0, Math.min(FIELD.width - ORE.size, x));
+    item.y = y;
+    item.speed = ORE.speed + random.range(0, 30);
+    item.vx = random.pick([-1, 1]) * random.range(10, 50);
+    item.spin = random.range(-2, 2);
+    item.angle = random.range(0, Math.PI * 2);
+    item.counted = true;
+    item.nearMissed = true;
+    item.hp = 1;
+    item.phase = random.range(0, Math.PI * 2);
+    item.timer = ORE.life;
+    item.mark = 0;
+    item.seq = 0;
   }
 
   function killBoss() {
@@ -302,18 +530,13 @@ export function createWorld(random) {
     state.bossHp = 0;
   }
 
-  /** A bolt destroyed a meteor: score it, and splitters burst into two shards. Big kills freeze the world for a few steps (hit-stop) and get a bigger popup. */
+  /** A bolt destroyed a meteor: score it, and splitters burst into two shards while boulders burst into three ore shards. A kill refreshes the combo window. Big kills freeze the world for a few steps (hit-stop) and get a bigger popup. */
   function killMeteor(item) {
     const points = METEOR[item.sub].killPoints * multiplier();
     state.score += points;
     state.stats.kills += 1;
-    // Kill streak: every 10th kill in a row without taking a hit pays a bonus.
-    state.killStreak += 1;
-    if (state.killStreak % 10 === 0) {
-      const streakBonus = 100 * multiplier();
-      state.score += streakBonus;
-      post('streak', item.x + item.width / 2, item.y - 10, `STREAK x${state.killStreak}! +${streakBonus}`, '#ff2a6d');
-    }
+    registerKill(item.x + item.width / 2, item.y);
+    if (state.combo > 0) state.comboTimer = COMBO.window;
     if (item.sub === 'brute' || item.sub === 'splitter') state.hitStop = 4;
     if (item.sub === 'brute') post('bigkill', item.x + item.width / 2, item.y + item.height / 2, `+${points}`, '#ff9a3d');
     else post('kill', item.x + item.width / 2, item.y + item.height / 2, `+${points}`, '#ff9a3d');
@@ -321,16 +544,50 @@ export function createWorld(random) {
       spawnShardAt(item.x - 10, item.y);
       spawnShardAt(item.x + item.width - 20, item.y);
     }
+    if (item.sub === 'boulder') {
+      spawnOre(item.x + item.width / 2 - 24, item.y + item.height / 2);
+      spawnOre(item.x + item.width / 2, item.y + item.height / 2 + 10);
+      spawnOre(item.x + item.width / 2 + 24, item.y + item.height / 2);
+    }
     item.active = false;
   }
 
-  /** Fire the ship's guns: one bolt, or three while SPREAD SHOT runs. */
+  /** A gunship is down: worth 100, and its bullets die with it. */
+  function killGunship(item) {
+    const points = GUNSHIP.killPoints * multiplier();
+    state.score += points;
+    state.stats.kills += 1;
+    registerKill(item.x + item.width / 2, item.y);
+    if (state.combo > 0) state.comboTimer = COMBO.window;
+    post('kill', item.x + item.width / 2, item.y + item.height / 2, `GUNSHIP DOWN +${points}`, '#ff5a4e');
+    const owner = items.indexOf(item);
+    for (let index = 0; index < items.length; index += 1) {
+      const bullet = items[index];
+      if (bullet.active && bullet.kind === KIND_EBULLET && bullet.seq === owner) bullet.active = false;
+    }
+    item.active = false;
+  }
+
+  /** The black hole ate a meteor: it scores, quietly, with no hit-stop and no shards. */
+  function holeKill(item) {
+    const points = METEOR[item.sub].killPoints * multiplier();
+    state.score += points;
+    state.stats.kills += 1;
+    registerKill(item.x + item.width / 2, item.y);
+    post('hole', item.x + item.width / 2, item.y, `+${points}`, '#b07dff');
+    item.active = false;
+  }
+
+  /** Fire the ship's guns: one bolt, three while SPREAD SHOT runs, plus one per EXTRA BOLT upgrade, fanned evenly. */
   function fire() {
     const centre = ship.x + ship.width / 2;
-    const angles = state.spreadTimer > 0 ? [-150, 0, 150] : [0];
-    for (const vx of angles) {
+    const count = (state.spreadTimer > 0 ? 3 : 1) + state.upgrades.spread;
+    let fired = 0;
+    for (let i = 0; i < count; i += 1) {
+      const vx = count === 1 ? 0 : (i / (count - 1) - 0.5) * 300;
       const bolt = freeItem();
       if (bolt === null) break;
+      state.boltSeq += 1;
       bolt.active = true;
       bolt.kind = KIND_BOLT;
       bolt.sub = 'bolt';
@@ -346,8 +603,39 @@ export function createWorld(random) {
       bolt.nearMissed = true;
       bolt.hp = 0;
       bolt.phase = 0;
+      bolt.timer = 0;
+      bolt.mark = 0;
+      bolt.seq = state.boltSeq;
+      fired += 1;
     }
-    state.stats.shots += angles.length;
+    state.stats.shots += fired;
+  }
+
+  /** A fully charged shot: one wide bolt that pierces up to three targets for 3 damage each. */
+  function firePierce() {
+    const bolt = freeItem();
+    if (bolt === null) return;
+    state.boltSeq += 1;
+    bolt.active = true;
+    bolt.kind = KIND_BOLT;
+    bolt.sub = 'pierce';
+    bolt.width = CHARGE.width;
+    bolt.height = CHARGE.height;
+    bolt.x = ship.x + ship.width / 2 - CHARGE.width / 2;
+    bolt.y = ship.y - 8;
+    bolt.speed = -BOLT.speed * 1.1;
+    bolt.vx = 0;
+    bolt.spin = 0;
+    bolt.angle = 0;
+    bolt.counted = true;
+    bolt.nearMissed = true;
+    bolt.hp = CHARGE.pierceCount;
+    bolt.phase = 0;
+    bolt.timer = 0;
+    bolt.mark = 0;
+    bolt.seq = state.boltSeq;
+    state.stats.shots += 1;
+    state.fireCooldown = fireCooldown();
   }
 
   /** The nova bomb: every meteor on screen shatters at once, and the dreadnought takes 5 damage. Cleared meteors score as if shot; splitters still burst into shards. */
@@ -435,15 +723,47 @@ export function createWorld(random) {
       }
       state.hitsThisWave = 0;
       state.wave = wave;
+      state.theme = themeForWave(wave);
+      state.gunshipsSpawned = 0;
+      state.gunshipTimer = GUNSHIP.interval;
+      // The black hole opens once per wave from wave 3, a few seconds in.
+      if (wave >= BLACKHOLE.unlockWave) {
+        state.hole.at = state.elapsed + random.range(BLACKHOLE.spawnDelayMin, BLACKHOLE.spawnDelayMax);
+        state.hole.done = false;
+        state.hole.warned = false;
+        state.hole.active = false;
+      } else {
+        state.hole.at = 0;
+        state.hole.active = false;
+      }
       const bonus = 50 * wave;
       state.score += bonus;
       events |= EVENT_WAVE;
-      post('wave', FIELD.width / 2, FIELD.height / 2 - 60, `WAVE ${wave}  +${bonus}`, '#a78bfa');
-      const flavor = ['DANGER RISES', 'THE STORM THICKENS', 'HOLD THE LINE', 'NO MERCY'][wave % 4];
-      post('wave', FIELD.width / 2, FIELD.height / 2 - 20, flavor, '#9a8fc0');
+      post('wave', FIELD.width / 2, FIELD.height / 2 - 60, `WAVE ${wave} — ${THEMES[state.theme].name}`, '#a78bfa');
+      post('wave', FIELD.width / 2, FIELD.height / 2 - 20, `+${bonus}`, '#9a8fc0');
       if (BOSS.waves.includes(wave) && state.boss === null) {
         spawnBoss();
         post('boss', FIELD.width / 2, 200, '⚠ DREADNOUGHT INCOMING ⚠', '#ff5a4e');
+      }
+    }
+
+    // The black hole's schedule: warned 2s before it opens, gone after 8s.
+    if (!harmless) {
+      if (state.hole.at > 0 && !state.hole.active && !state.hole.done && !state.hole.warned && state.elapsed >= state.hole.at - BLACKHOLE.warnBefore) {
+        state.hole.warned = true;
+        post('hole', FIELD.width / 2, 200, '⚠ BLACK HOLE DETECTED ⚠', '#b07dff');
+        state.pendingEvents |= EVENT_HOLE;
+      }
+      if (state.hole.at > 0 && !state.hole.active && !state.hole.done && state.elapsed >= state.hole.at) {
+        state.hole.active = true;
+        state.hole.x = random.range(180, FIELD.width - 180);
+        state.hole.y = random.range(140, 420);
+        state.hole.age = 0;
+        state.hole.done = true;
+      }
+      if (state.hole.active) {
+        state.hole.age += sdt;
+        if (state.hole.age >= BLACKHOLE.duration) state.hole.active = false;
       }
     }
 
@@ -459,6 +779,28 @@ export function createWorld(random) {
     ship.tilt += (Math.max(-1, Math.min(1, velocity / SHIP.speed)) * 0.32 - ship.tilt) * Math.min(1, 10 * sdt);
     if (ship.invulnerable > 0) ship.invulnerable = Math.max(0, ship.invulnerable - sdt);
 
+    // The black hole drags the ship toward it; touch the horizon and it bites.
+    if (state.hole.active && !harmless) {
+      const scx = ship.x + ship.width / 2;
+      const scy = ship.y + ship.height / 2;
+      const hdx = state.hole.x - scx;
+      const hdy = state.hole.y - scy;
+      const hdist = Math.hypot(hdx, hdy);
+      if (hdist < BLACKHOLE.pullRadius && hdist > 1) {
+        const pull = 40 + BLACKHOLE.shipPullMax * (1 - hdist / BLACKHOLE.pullRadius);
+        ship.x = Math.max(0, Math.min(FIELD.width - ship.width, ship.x + (hdx / hdist) * pull * sdt));
+        ship.y = Math.max(FIELD.shipY - 260, Math.min(FIELD.shipY, ship.y + (hdy / hdist) * pull * sdt));
+      }
+      if (hdist < BLACKHOLE.horizon && ship.invulnerable === 0) {
+        events |= damageShip();
+        ship.x = Math.max(0, Math.min(FIELD.width - ship.width, ship.x - Math.sign(hdx || 1) * 160));
+        ship.y = FIELD.shipY;
+      }
+    } else if (ship.y < FIELD.shipY) {
+      // Eased back down to the flight band once the hole is gone.
+      ship.y = Math.min(FIELD.shipY, ship.y + 200 * sdt);
+    }
+
     // Combo window and power-up clocks.
     if (state.comboTimer > 0) {
       state.comboTimer -= sdt;
@@ -472,10 +814,43 @@ export function createWorld(random) {
     if (state.frenzyTimer > 0) state.frenzyTimer -= sdt;
     if (state.fireCooldown > 0) state.fireCooldown -= sdt;
 
-    // Hold fire to shoot; FRENZY fires twice as fast.
-    if (!harmless && steer.firing && state.fireCooldown <= 0) {
+    // Charge shot: hold to charge, release to fire. The first 0.35s of a hold
+    // still sprays normal bolts, so taps feel the same as before; past that the
+    // guns charge instead. A release at 50% or more fires a piercing bolt, a
+    // shorter hold fires one normal bolt, and holding a full second past full
+    // overheats the gun for two seconds.
+    if (state.overheat > 0) {
+      state.overheat = Math.max(0, state.overheat - sdt);
+      state.charge = 0;
+    } else if (!harmless) {
+      if (steer.firing) {
+        state.charge = Math.min(CHARGE.full + CHARGE.grace + 0.01, state.charge + sdt);
+        if (state.charge > CHARGE.full + CHARGE.grace) {
+          state.overheat = CHARGE.lockout;
+          state.charge = 0;
+          state.fireCooldown = CHARGE.lockout;
+          post('overheat', ship.x + ship.width / 2, ship.y - 40, 'OVERHEATED!', '#ff5a4e');
+          events |= EVENT_OVERHEAT;
+        }
+      } else if (state.prevFiring) {
+        if (state.charge >= CHARGE.full * 0.5) {
+          firePierce();
+          events |= EVENT_SHOOT;
+        } else if (state.charge >= CHARGE.startAt) {
+          fire();
+          state.fireCooldown = fireCooldown();
+          events |= EVENT_SHOOT;
+        }
+        state.charge = 0;
+      }
+    }
+    state.prevFiring = steer.firing;
+
+    // Hold fire to shoot; FRENZY fires twice as fast. While charging, the
+    // normal guns stay quiet.
+    if (!harmless && steer.firing && state.overheat <= 0 && state.charge < CHARGE.startAt && state.fireCooldown <= 0) {
       fire();
-      state.fireCooldown = state.frenzyTimer > 0 ? BOLT.frenzyCooldown : BOLT.cooldown;
+      state.fireCooldown = fireCooldown();
       events |= EVENT_SHOOT;
     }
 
@@ -494,7 +869,19 @@ export function createWorld(random) {
     state.starTimer -= sdt;
     if (state.starTimer <= 0) {
       spawnStar();
-      state.starTimer += STAR.interval + random.range(0, STAR.intervalJitter);
+      const starMul = THEMES[state.theme].starMul || 1;
+      state.starTimer += (STAR.interval + random.range(0, STAR.intervalJitter)) * starMul;
+    }
+    // Gunships: from wave 4, a couple per wave (one more on patrol waves).
+    if (!harmless && state.wave >= GUNSHIP.unlockWave) {
+      const quota = state.theme === 'patrol' ? GUNSHIP.patrolPerWave : GUNSHIP.perWave;
+      if (state.gunshipsSpawned < quota) {
+        state.gunshipTimer -= sdt;
+        if (state.gunshipTimer <= 0) {
+          spawnGunship();
+          state.gunshipTimer = state.theme === 'patrol' ? GUNSHIP.patrolInterval : GUNSHIP.interval;
+        }
+      }
     }
     if (!harmless) {
       state.powerTimer -= sdt;
@@ -524,13 +911,14 @@ export function createWorld(random) {
       if (item.x < -item.width) item.x = -item.width;
       if (item.x > FIELD.width) item.x = FIELD.width;
 
-      // A magnet bends nearby stars toward the ship.
-      if (item.kind === KIND_STAR && state.magnetTimer > 0) {
+      // A magnet bends nearby stars and ore toward the ship.
+      if ((item.kind === KIND_STAR || item.kind === KIND_ORE) && state.magnetTimer > 0) {
         const dx = ship.x + ship.width / 2 - (item.x + item.width / 2);
         const dy = ship.y + ship.height / 2 - (item.y + item.height / 2);
         const distance = Math.hypot(dx, dy);
-        if (distance > 1 && distance < 280) {
-          const pull = 520 * (1 - distance / 280);
+        const radius = magnetRadius();
+        if (distance > 1 && distance < radius) {
+          const pull = 520 * (1 - distance / radius);
           item.x += (dx / distance) * pull * sdt;
           item.y += (dy / distance) * pull * sdt;
         }
@@ -538,36 +926,85 @@ export function createWorld(random) {
 
       item.y += item.speed * slowFactor * sdt;
 
-      // --- Bolts fly up and smash things. ---
+      // The black hole pulls things in; anything crossing the horizon is eaten.
+      if (state.hole.active && !harmless && (item.kind === KIND_METEOR || item.kind === KIND_STAR || item.kind === KIND_POWERUP || item.kind === KIND_ORE || item.kind === KIND_GUNSHIP)) {
+        const hdx = state.hole.x - (item.x + item.width / 2);
+        const hdy = state.hole.y - (item.y + item.height / 2);
+        const hdist = Math.hypot(hdx, hdy);
+        if (hdist < BLACKHOLE.pullRadius && hdist > 1) {
+          const pull = 60 + 260 * (1 - hdist / BLACKHOLE.pullRadius);
+          item.x += (hdx / hdist) * pull * sdt;
+          item.y += (hdy / hdist) * pull * sdt;
+        }
+        if (hdist < BLACKHOLE.horizon) {
+          if (item.kind === KIND_METEOR) holeKill(item);
+          else if (item.kind === KIND_GUNSHIP) killGunship(item);
+          else item.active = false;
+          continue;
+        }
+      }
+
+      // --- Bolts fly up and smash things. A piercing bolt passes through up to
+      // three targets for 3 damage each and never hits one target twice. ---
       if (item.kind === KIND_BOLT) {
         if (item.y < -40) {
           item.active = false;
           continue;
         }
+        const pierce = item.sub === 'pierce';
         let spent = false;
         for (let j = 0; j < items.length; j += 1) {
           const target = items[j];
-          if (!target.active || target.kind !== KIND_METEOR) continue;
-          if (overlaps(item, target)) {
-            item.active = false;
-            spent = true;
-            target.hp -= BOLT.damage;
+          if (!target.active) continue;
+          if (target.kind !== KIND_METEOR && target.kind !== KIND_GUNSHIP && target.kind !== KIND_EBULLET) continue;
+          if (target.mark === item.seq) continue;
+          if (!overlaps(item, target)) continue;
+          target.mark = item.seq;
+          if (target.kind === KIND_EBULLET) {
+            target.active = false;
+            state.score += EBULLET.points * multiplier();
+          } else if (target.kind === KIND_GUNSHIP) {
+            target.hp -= pierce ? CHARGE.pierceDamage : BOLT.damage;
+            if (target.hp <= 0) {
+              killGunship(target);
+              events |= EVENT_KILL;
+            }
+          } else {
+            target.hp -= pierce ? CHARGE.pierceDamage : BOLT.damage;
             if (target.hp <= 0) {
               killMeteor(target);
               events |= EVENT_KILL;
             }
-            break;
           }
+          if (!pierce) {
+            item.active = false;
+            spent = true;
+          } else {
+            item.hp -= 1;
+            if (item.hp <= 0) {
+              item.active = false;
+              spent = true;
+            }
+          }
+          break;
         }
         if (!spent && state.boss !== null && state.boss.active && overlaps(item, state.boss)) {
-          item.active = false;
-          state.bossHp -= BOLT.damage;
-          state.boss.hp = state.bossHp;
-          if (state.bossHp <= 0) {
-            killBoss();
-            events |= EVENT_BOSS;
+          if (state.boss.mark !== item.seq) {
+            state.boss.mark = item.seq;
+            state.bossHp -= pierce ? CHARGE.pierceDamage : BOLT.damage;
+            state.boss.hp = state.bossHp;
+            if (state.bossHp <= 0) {
+              killBoss();
+              events |= EVENT_BOSS;
+            } else {
+              events |= EVENT_KILL;
+            }
+          }
+          if (!pierce) {
+            item.active = false;
           } else {
-            events |= EVENT_KILL;
+            item.hp -= 1;
+            if (item.hp <= 0) item.active = false;
           }
         }
         continue;
@@ -580,6 +1017,59 @@ export function createWorld(random) {
         if (!harmless && ship.invulnerable === 0 && overlaps(item, box)) {
           events |= damageShip();
           if (events & EVENT_OVER) break;
+        }
+        continue;
+      }
+
+      // --- Gunships drift down, weaving, and fire aimed shots at the ship. ---
+      if (item.kind === KIND_GUNSHIP) {
+        item.phase += sdt * 2;
+        item.x += Math.sin(item.phase) * 60 * sdt;
+        item.timer -= sdt;
+        if (item.timer <= 0 && !harmless) {
+          spawnEnemyBullet(item.x + item.width / 2, item.y + item.height, ship.x + ship.width / 2, ship.y + ship.height / 2, index);
+          item.timer = GUNSHIP.fireInterval;
+        }
+        if (item.y > FIELD.height + 40) {
+          item.active = false;
+          continue;
+        }
+        if (!harmless && ship.invulnerable === 0 && overlaps(item, box)) {
+          killGunship(item);
+          events |= damageShip() | EVENT_KILL;
+          if (events & EVENT_OVER) break;
+        }
+        continue;
+      }
+
+      // --- Enemy bullets: slow red orbs, gone off the field or on impact. ---
+      if (item.kind === KIND_EBULLET) {
+        if (item.x < -20 || item.x > FIELD.width + 20 || item.y < -20 || item.y > FIELD.height + 20) {
+          item.active = false;
+          continue;
+        }
+        if (!harmless && ship.invulnerable === 0 && overlaps(item, box)) {
+          item.active = false;
+          events |= damageShip();
+          if (events & EVENT_OVER) break;
+        }
+        continue;
+      }
+
+      // --- Ore shards: fade after 6s, or pay out when the ship sweeps them up. ---
+      if (item.kind === KIND_ORE) {
+        item.timer -= sdt;
+        if (item.timer <= 0 || item.y > FIELD.height + 40) {
+          item.active = false;
+          continue;
+        }
+        if (!harmless && overlaps(item, box)) {
+          item.active = false;
+          const points = ORE.points * multiplier();
+          state.score += points;
+          state.stats.ore += 1;
+          events |= EVENT_ORE;
+          post('ore', item.x + item.width / 2, item.y, `+${points}`, '#41d9ff');
         }
         continue;
       }
@@ -641,5 +1131,5 @@ export function createWorld(random) {
   }
 
   reset();
-  return { state, reset, step, multiplier };
+  return { state, reset, step, multiplier, shopItems, buyUpgrade, openShop };
 }

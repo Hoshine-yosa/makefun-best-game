@@ -155,6 +155,16 @@ export function createParticles() {
         popup(note.x, note.y - 6, note.text, note.color, 26);
       } else if (note.type === 'wave') {
         popup(note.x, note.y, note.text, note.color, 34);
+      } else if (note.type === 'hole') {
+        burst(note.x, note.y, '#b07dff', 18, 280, 4);
+        ring(note.x, note.y, '#b07dff', 160);
+        popup(note.x, note.y, note.text, note.color, 30);
+      } else if (note.type === 'ore') {
+        burst(note.x, note.y, '#41d9ff', 8, 170, 3);
+        popup(note.x, note.y - 6, note.text, note.color, 22);
+      } else if (note.type === 'overheat') {
+        burst(note.x, note.y, '#ff5a4e', 12, 200, 3);
+        popup(note.x, note.y, note.text, note.color, 28);
       } else if (note.type === 'perfect') {
         burst(note.x, note.y, '#7dffb0', 24, 320, 4);
         ring(note.x, note.y, '#7dffb0', 150);

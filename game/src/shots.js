@@ -5,8 +5,8 @@
 // frame is what a real game looks like and the same seed always gives the same
 // frame. The storm scene runs into wave 5, where the dreadnought arrives, and stages
 // a live combo with power-ups up, the way a good run looks at its busiest.
-import { BOLT, FIELD, METEOR, POWERUP, SHIP, STEP } from './config.js';
-import { EVENT_OVER, KIND_BOLT, KIND_BOSS, KIND_METEOR, KIND_POWERUP, KIND_STAR } from './world.js';
+import { BOLT, FIELD, GUNSHIP, METEOR, ORE, POWERUP, SHIP, STEP } from './config.js';
+import { EVENT_OVER, KIND_BOLT, KIND_BOSS, KIND_EBULLET, KIND_GUNSHIP, KIND_METEOR, KIND_ORE, KIND_POWERUP, KIND_STAR } from './world.js';
 import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
 
 const START_SECONDS = 5;
@@ -63,7 +63,11 @@ function autopilot(state, horizon) {
       best = DIRECTIONS[index];
     }
   }
-  return { direction: best, pointerX: null, firing: true };
+  // Pulse the trigger: 0.3s on, one step off. Holding it down would charge
+  // the shot and overheat the gun, so the pilot taps like a player does.
+  const tick = Math.floor(state.elapsed / STEP);
+  const firing = tick % 19 < 18;
+  return { direction: best, pointerX: null, firing };
 }
 
 /** Fill a few empty item slots with meteors high in the sky, for a crowded frame. */
@@ -168,6 +172,115 @@ function stagePowerup(state, name, x, y) {
   }
 }
 
+/** Stage one gunship mid-field, for a livelier frame. */
+function stageGunship(state, x, y) {
+  for (let index = 0; index < state.items.length; index += 1) {
+    const item = state.items[index];
+    if (item.active) continue;
+    item.active = true;
+    item.kind = KIND_GUNSHIP;
+    item.sub = 'gunship';
+    item.width = GUNSHIP.width;
+    item.height = GUNSHIP.height;
+    item.x = x;
+    item.y = y;
+    item.speed = GUNSHIP.speed;
+    item.vx = 0;
+    item.spin = 0;
+    item.angle = 0;
+    item.counted = true;
+    item.nearMissed = true;
+    item.hp = GUNSHIP.hp;
+    item.phase = 0.6;
+    item.timer = 0.5;
+    item.mark = 0;
+    item.seq = 0;
+    return;
+  }
+}
+
+/** Stage one aimed enemy bullet, already in flight. */
+function stageEBullet(state, x, y, vx, vy) {
+  for (let index = 0; index < state.items.length; index += 1) {
+    const item = state.items[index];
+    if (item.active) continue;
+    item.active = true;
+    item.kind = KIND_EBULLET;
+    item.sub = 'ebullet';
+    item.width = 12;
+    item.height = 12;
+    item.x = x;
+    item.y = y;
+    item.speed = vy;
+    item.vx = vx;
+    item.spin = 0;
+    item.angle = 0;
+    item.counted = true;
+    item.nearMissed = true;
+    item.hp = 1;
+    item.phase = 0;
+    item.timer = 0;
+    item.mark = 0;
+    item.seq = 0;
+    return;
+  }
+}
+
+/** Stage a few glowing ore shards from a shattered boulder. */
+function stageOre(state, count) {
+  let placed = 0;
+  for (let index = 0; index < state.items.length && placed < count; index += 1) {
+    const item = state.items[index];
+    if (item.active) continue;
+    item.active = true;
+    item.kind = KIND_ORE;
+    item.sub = 'ore';
+    item.width = ORE.size;
+    item.height = ORE.size;
+    item.x = 420 + placed * 120;
+    item.y = 380 + placed * 40;
+    item.speed = ORE.speed;
+    item.vx = 0;
+    item.spin = 0;
+    item.angle = placed * 0.7;
+    item.counted = true;
+    item.nearMissed = true;
+    item.hp = 1;
+    item.phase = placed;
+    item.timer = ORE.life;
+    item.mark = 0;
+    item.seq = 0;
+    placed += 1;
+  }
+}
+
+/** Stage one wide piercing bolt above the ship. */
+function stagePierceBolt(state) {
+  for (let index = 0; index < state.items.length; index += 1) {
+    const item = state.items[index];
+    if (item.active) continue;
+    item.active = true;
+    item.kind = KIND_BOLT;
+    item.sub = 'pierce';
+    item.width = 16;
+    item.height = 34;
+    item.x = state.ship.x + state.ship.width / 2 - 8;
+    item.y = state.ship.y - 180;
+    item.speed = -BOLT.speed * 1.1;
+    item.vx = 0;
+    item.spin = 0;
+    item.angle = 0;
+    item.counted = true;
+    item.nearMissed = true;
+    item.hp = 3;
+    item.phase = 0;
+    item.timer = 0;
+    item.mark = 0;
+    item.seq = 0;
+    return;
+  }
+}
+
 /** Force a damaged dreadnought into the frame (the sim's own boss may already be dead). */
 function stageBoss(state) {
   if (state.boss !== null && state.boss.active) {
@@ -225,18 +338,28 @@ export function stageShot(name, world) {
     }
     // A good run at its busiest: a live combo, power-ups running, a full sky, the boss.
     world.state.combo = 18;
-    world.state.comboTimer = 3.5;
+    world.state.comboTimer = 2.5;
     world.state.shield = true;
     world.state.magnetTimer = 6;
     world.state.slowTimer = 5;
     world.state.doubleTimer = 8;
     world.state.spreadTimer = 8;
     world.state.frenzyTimer = 6;
+    world.state.charge = 0.7;
     crowdSky(world.state, 10, ['rock', 'shard', 'dart', 'weaver', 'boulder', 'splitter', 'brute', 'shard', 'rock', 'weaver']);
     stageStars(world.state, 4);
     stageBolts(world.state, 3);
     stagePowerup(world.state, 'bomb', 950, 320);
     stageBoss(world.state);
+    // The new threats in frame: a gunship firing, a black hole, ore from a boulder.
+    stageGunship(world.state, 880, 200);
+    stageEBullet(world.state, 900, 260, -40, 240);
+    stageEBullet(world.state, 850, 300, 30, 260);
+    stageOre(world.state, 3);
+    world.state.hole.active = true;
+    world.state.hole.x = 1050;
+    world.state.hole.y = 300;
+    world.state.hole.age = 2;
     return { screen: SCREEN_PLAY, best: world.state.score };
   }
   const limit = name === 'end' ? END_LIMIT_SECONDS : PLAY_SECONDS;
@@ -246,11 +369,13 @@ export function stageShot(name, world) {
   }
   if (name === 'play') {
     world.state.combo = 8;
-    world.state.comboTimer = 3;
+    world.state.comboTimer = 2.5;
     world.state.magnetTimer = 6;
     crowdSky(world.state, 4, ['rock', 'shard', 'dart', 'rock']);
     stageStars(world.state, 3);
     stageBolts(world.state, 2);
+    stagePierceBolt(world.state);
+    stageGunship(world.state, 950, 150);
   }
   if (name === 'end' && world.state.boss !== null) {
     // The boss is gone by the time the panel goes up; a health bar peeking

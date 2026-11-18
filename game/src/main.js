@@ -9,23 +9,9 @@
 // for a screenshot.
 import { BEST_KEY, LIVES, SHAKE, STEP } from './config.js';
 import { createRandom } from './random.js';
-import {
-  createWorld,
-  EVENT_BLOCKED,
-  EVENT_BOMB,
-  EVENT_BOSS,
-  EVENT_HIT,
-  EVENT_KILL,
-  EVENT_NEAR,
-  EVENT_OVER,
-  EVENT_POWERUP,
-  EVENT_SHOOT,
-  EVENT_STAR,
-  EVENT_WAVE,
-  KIND_STAR,
-} from './world.js';
+import { createWorld, EVENT_BLOCKED, EVENT_BOMB, EVENT_BOSS, EVENT_HIT, EVENT_HOLE, EVENT_KILL, EVENT_NEAR, EVENT_ORE, EVENT_OVER, EVENT_OVERHEAT, EVENT_POWERUP, EVENT_SHOOT, EVENT_STAR, EVENT_WAVE, KIND_STAR } from './world.js';
 import { ACTION_CONFIRM, ACTION_MUTE, ACTION_PAUSE, createInput } from './input.js';
-import { createRenderer, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+import { createRenderer, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_SHOP, SCREEN_TITLE } from './render.js';
 import { createParticles } from './particles.js';
 import { createAudio } from './audio.js';
 import { stageShot } from './shots.js';
@@ -140,15 +126,39 @@ function runGame() {
 
   function handleActions() {
     const actions = input.takeActions();
+    const digits = input.takeDigits();
+    const clicks = input.takeClicks();
     if (actions & ACTION_MUTE) {
       audio.setMuted(!audio.isMuted());
       announce(audio.isMuted() ? 'Sound off.' : 'Sound on.');
     }
+    if (screen === SCREEN_SHOP) {
+      // Number keys buy; clicks buy a row or continue; Enter/Space continues.
+      for (const digit of digits) world.buyUpgrade(digit - 1);
+      for (const click of clicks) {
+        const hit = renderer.shopHit(click.x, click.y);
+        if (hit === null) continue;
+        if (hit.type === 'buy') world.buyUpgrade(hit.index);
+        else if (hit.type === 'continue') {
+          screen = SCREEN_PLAY;
+          announce('Playing.');
+        }
+      }
+      if (actions & ACTION_CONFIRM) {
+        screen = SCREEN_PLAY;
+        announce('Playing.');
+      }
+      return;
+    }
     if (actions & ACTION_CONFIRM && (screen === SCREEN_TITLE || screen === SCREEN_OVER)) startGame();
+    else if (clicks.length > 0 && (screen === SCREEN_TITLE || screen === SCREEN_OVER)) startGame();
     else if (actions & ACTION_PAUSE && screen === SCREEN_PLAY) {
       screen = SCREEN_PAUSED;
       announce('Paused.');
     } else if (actions & (ACTION_PAUSE | ACTION_CONFIRM) && screen === SCREEN_PAUSED) {
+      screen = SCREEN_PLAY;
+      announce('Playing.');
+    } else if (clicks.length > 0 && screen === SCREEN_PAUSED) {
       screen = SCREEN_PLAY;
       announce('Playing.');
     }
@@ -184,6 +194,9 @@ function runGame() {
     }
     if (events & EVENT_POWERUP) audio.powerup();
     if (events & EVENT_WAVE) audio.wave();
+    if (events & EVENT_ORE) audio.ore();
+    if (events & EVENT_HOLE) audio.hole();
+    if (events & EVENT_OVERHEAT) audio.overheat();
     if (events & EVENT_OVER) endGame();
     else if (events & EVENT_HIT) {
       announce(world.state.lives === 1 ? 'Hit. 1 life left.' : `Hit. ${world.state.lives} lives left.`);
@@ -205,10 +218,22 @@ function runGame() {
     last = now;
     handleActions();
     if (screen === SCREEN_TITLE || screen === SCREEN_PLAY) {
+      const waveBefore = world.state.wave;
       accumulator += dt;
       while (accumulator >= STEP && (screen === SCREEN_TITLE || screen === SCREEN_PLAY)) {
         step();
         accumulator -= STEP;
+      }
+      // A cleared wave opens the upgrade shop before the next wave starts.
+      if (screen === SCREEN_PLAY && world.state.wave > waveBefore && world.state.lives > 0) {
+        world.openShop();
+        screen = SCREEN_SHOP;
+        // Drain any input pressed before the shop appeared, so a held trigger
+        // does not buy or skip the shop the instant it opens.
+        input.takeActions();
+        input.takeDigits();
+        input.takeClicks();
+        announce('Wave cleared. Upgrade shop open.');
       }
     } else {
       accumulator = 0;
@@ -222,7 +247,10 @@ function runGame() {
       particles.ember(ship.x + ship.width / 2, ship.y + ship.height - 2, '#39e6ff');
       audio.updateMusic(world.state.wave, world.state.boss !== null);
     }
-    renderer.draw(world.state, screen, best, isNewBest);
+    const shop = screen === SCREEN_SHOP
+      ? { items: world.shopItems(), score: world.state.score, wave: world.state.wave }
+      : null;
+    renderer.draw(world.state, screen, best, isNewBest, shop);
   }
 
   // Leaving the tab pauses a running game rather than letting meteors fall unseen.

@@ -45,9 +45,59 @@ export const METEOR = {
   speedJitter: 70,
 };
 
-/** Bolts the ship fires: speed, cooldown, and what a spread shot adds. */
+/** The ship's guns: speed, cooldown, and what a spread shot adds. */
 export const BOLT = {
   width: 8, height: 22, speed: 900, cooldown: 0.2, frenzyCooldown: 0.1, damage: 1,
+};
+
+/** Hold to charge a piercing shot: full in 1s, then 0.5s of grace before the gun overheats and locks for 2s. Below 50% charge a release fires a normal bolt; charging only starts after 0.35s of holding, so taps still spray. */
+export const CHARGE = {
+  full: 1.0, grace: 0.5, lockout: 2, startAt: 0.35,
+  pierceDamage: 3, pierceCount: 3, width: 16, height: 34,
+};
+
+/** Gunships: enemy ships that drift down and fire aimed shots at the player. */
+export const GUNSHIP = {
+  unlockWave: 4, width: 64, height: 40, speed: 120, speedPerWave: 8,
+  hp: 3, killPoints: 100, fireInterval: 1.5, bulletSpeed: 260,
+  /** Seconds between gunship spawns; the patrol theme spawns faster. */
+  interval: 8, patrolInterval: 4,
+  /** How many gunships a wave may spawn (patrol waves get one more). */
+  perWave: 2, patrolPerWave: 3,
+};
+
+/** Enemy bullets: slow red orbs the gunships aim at the ship. Shoot them down for a few points. */
+export const EBULLET = { size: 12, points: 5 };
+
+/** Ore shards: boulders burst into three of these when shattered. Drift slowly, fade after 6s. */
+export const ORE = { size: 16, speed: 60, life: 6, points: 25 };
+
+/** The black hole: one per wave from wave 3, warned 2s before it opens, pulling everything nearby for 8s. */
+export const BLACKHOLE = {
+  unlockWave: 3, duration: 8, warnBefore: 2,
+  pullRadius: 420, pullMax: 200, shipPullMax: 160, horizon: 46,
+  spawnDelayMin: 4, spawnDelayMax: 9,
+};
+
+/** The between-wave upgrade shop: score is the currency, upgrades last the run. */
+export const SHOP = [
+  { id: 'fire', name: 'RAPID FIRE', desc: '+15% fire rate', costs: [500, 1000, 2000] },
+  { id: 'spread', name: 'EXTRA BOLT', desc: '+1 bolt per shot', costs: [800, 1600] },
+  { id: 'magnet', name: 'BIG MAGNET', desc: '+50% magnet radius', costs: [400, 800] },
+  { id: 'life', name: 'EXTRA LIFE', desc: '+1 life (max 5)', costs: [1500], perVisit: true },
+  { id: 'shield', name: 'SHIELD', desc: 'Shield for the next wave', costs: [600], perVisit: true },
+];
+
+/**
+ * Wave themes, fixed per wave number so every run plays the same. Boss waves
+ * keep the old mix; the rest cycle shower / swarm / patrol / calm.
+ */
+export const THEMES = {
+  shower: { name: 'METEOR SHOWER', meteorMul: 0.67, gunships: false },
+  swarm: { name: 'SWARM', shardMul: 0.5, boulderMul: 2, gunships: false },
+  patrol: { name: 'GUNSHIP PATROL', meteorMul: 1.3, gunships: true, gunshipInterval: 4 },
+  calm: { name: 'CALM', meteorMul: 1.3, starMul: 0.7, gunships: false },
+  boss: { name: 'BOSS', meteorMul: 1, gunships: false },
 };
 
 /** The boss: a dreadnought that arrives on waves 5, 10, 15 and 20. */
@@ -71,9 +121,10 @@ export const NEAR_MISS = { margin: 30, points: 5 };
 
 /**
  * Combo: every star caught inside the window adds one; the window refreshes on
- * each catch and the combo is lost when it runs out or the ship is hit.
+ * each catch and on each kill, and the combo is lost when it runs out or the ship
+ * is hit. The HUD shows the window draining, gold to red.
  */
-export const COMBO = { window: 4, perStep: 4, maxMultiplier: 8 };
+export const COMBO = { window: 3, perStep: 4, maxMultiplier: 8 };
 
 /** The seven power-ups: what they do, how long they last, their colour and mark. The bomb is instant: it clears every meteor on screen the moment it is caught. */
 export const POWERUPS = {
@@ -89,7 +140,7 @@ export const POWERUP_ORDER = ['shield', 'magnet', 'slow', 'double', 'spread', 'f
 export const POWERUP = { size: 30, speed: 170, jitter: 60 };
 
 /** How many falling things, particles and floating texts can exist at once. */
-export const POOL = { items: 140, particles: 360, popups: 20, rings: 10 };
+export const POOL = { items: 180, particles: 360, popups: 20, rings: 10 };
 
 /** Screen shake: how far the view jumps on a hit, and how fast it settles. */
 export const SHAKE = { hit: 14, decay: 34 };

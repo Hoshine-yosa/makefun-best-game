@@ -153,6 +153,24 @@ export function createAudio() {
     tone(587.33, 0.09, 0.24, 'sine', 0.14);
   }
 
+  /** The gun overheats: a low angry buzz. */
+  function overheat() {
+    slide(300, 55, 0, 0.4, 'sawtooth', 0.2);
+    noise(0, 0.25, 0.18, 700);
+  }
+
+  /** A black hole opens: a deep rumble that falls away. */
+  function hole() {
+    slide(130, 38, 0, 0.6, 'sine', 0.26);
+    tone(55, 0, 0.5, 'triangle', 0.18);
+  }
+
+  /** An ore shard collected: a bright high ping. */
+  function ore() {
+    tone(1318, 0, 0.1, 'sine', 0.15);
+    tone(1760, 0.05, 0.12, 'sine', 0.12);
+  }
+
   function gameOver() {
     tone(392, 0, 0.22, 'triangle', 0.2);
     tone(311.13, 0.18, 0.22, 'triangle', 0.2);
@@ -189,7 +207,7 @@ export function createAudio() {
   return {
     unlock, setMuted, isMuted,
     star, nearMiss, hit, shieldBlock, powerup, wave, gameOver, start,
-    shoot, explode, bossDie,
+    shoot, explode, bossDie, overheat, hole, ore,
     updateMusic,
   };
 }

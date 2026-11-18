@@ -5,13 +5,19 @@
 // drawImage calls; the starfield scrolls in three parallax layers behind them. The HUD
 // shows score, combo, wave, lives and the live power-ups; panels carry the title,
 // pause and game-over screens.
-import { COMBO, FIELD, FONT, LIVES, PALETTE, POWERUPS, WAVE } from './config.js';
-import { KIND_BOLT, KIND_BOSS, KIND_METEOR, KIND_POWERUP, KIND_STAR } from './world.js';
+import { CHARGE, COMBO, FIELD, FONT, LIVES, PALETTE, POWERUPS, SHOP, THEMES, WAVE } from './config.js';
+import { KIND_BOLT, KIND_BOSS, KIND_EBULLET, KIND_GUNSHIP, KIND_METEOR, KIND_ORE, KIND_POWERUP, KIND_STAR } from './world.js';
 
 export const SCREEN_TITLE = 'title';
 export const SCREEN_PLAY = 'play';
 export const SCREEN_PAUSED = 'paused';
 export const SCREEN_OVER = 'over';
+export const SCREEN_SHOP = 'shop';
+
+/** The shop panel's geometry: drawShop and shopHit share it, so a click buys what is drawn. */
+const SHOP_PANEL = { width: 860, top: 150 };
+const SHOP_ROW = { height: 56, gap: 8, top: 0 };
+const SHOP_CONTINUE = { width: 300, height: 46 };
 
 const PANEL = { width: 780, top: 150, line: 36, bottom: 76 };
 
@@ -316,6 +322,44 @@ export function createRenderer(canvas, particles) {
     orbSprites[name] = sprite;
   }
 
+  const gunshipSprite = (function paintGunship() {
+    const sprite = makeCanvas(96, 72);
+    const ctx = sprite.getContext('2d');
+    ctx.save();
+    ctx.translate(48, 36);
+    ctx.shadowColor = '#ff2a3d';
+    ctx.shadowBlur = 12;
+    // A sleek angular hull, pointing down at the player, with red running lights.
+    ctx.fillStyle = '#2a1218';
+    ctx.beginPath();
+    ctx.moveTo(0, 30);
+    ctx.lineTo(14, 6);
+    ctx.lineTo(38, -14);
+    ctx.lineTo(16, -20);
+    ctx.lineTo(8, -28);
+    ctx.lineTo(-8, -28);
+    ctx.lineTo(-16, -20);
+    ctx.lineTo(-38, -14);
+    ctx.lineTo(-14, 6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#ff5a4e';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+    ctx.fillStyle = '#ff2a3d';
+    ctx.beginPath();
+    ctx.arc(0, 8, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ff8a7a';
+    ctx.beginPath();
+    ctx.arc(-26, -12, 3.5, 0, Math.PI * 2);
+    ctx.arc(26, -12, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    return sprite;
+  })();
+
   const shipSprite = (function paintShip() {
     const sprite = makeCanvas(110, 84);
     const ctx = sprite.getContext('2d');
@@ -485,20 +529,84 @@ export function createRenderer(canvas, particles) {
           context.textBaseline = 'alphabetic';
           context.fillText('DREADNOUGHT', item.x + item.width / 2, by - 8);
         }
-      } else if (item.kind === KIND_BOLT) {
-        const bx = item.x + item.width / 2;
+      } else if (item.kind === KIND_GUNSHIP) {
+        context.save();
+        context.translate(item.x + item.width / 2, item.y + item.height / 2);
+        context.rotate(Math.sin(item.phase) * 0.12);
+        context.drawImage(gunshipSprite, -48, -36, 96, 72);
+        context.restore();
+        // Health pips above the hull.
+        const hpw = 44;
+        context.fillStyle = 'rgba(0, 0, 0, 0.6)';
+        context.fillRect(item.x + item.width / 2 - hpw / 2 - 1, item.y - 12, hpw + 2, 6);
+        context.fillStyle = '#ff2a3d';
+        context.fillRect(item.x + item.width / 2 - hpw / 2, item.y - 11, hpw * Math.max(0, item.hp / 3), 4);
+      } else if (item.kind === KIND_EBULLET) {
+        const cx = item.x + item.width / 2;
+        const cy = item.y + item.height / 2;
         context.save();
         context.globalCompositeOperation = 'lighter';
-        context.shadowColor = '#7df3ff';
+        context.shadowColor = '#ff2a3d';
         context.shadowBlur = 12;
+        context.fillStyle = '#ff5a4e';
+        context.beginPath();
+        context.arc(cx, cy, item.width / 2, 0, Math.PI * 2);
+        context.fill();
+        context.fillStyle = '#ffd0c8';
+        context.beginPath();
+        context.arc(cx, cy, item.width / 5, 0, Math.PI * 2);
+        context.fill();
+        context.restore();
+      } else if (item.kind === KIND_ORE) {
+        const cx = item.x + item.width / 2;
+        const cy = item.y + item.height / 2;
+        const fade = Math.min(1, item.timer / 1.5);
+        context.save();
+        context.globalAlpha = fade;
+        context.globalCompositeOperation = 'lighter';
+        context.shadowColor = '#41d9ff';
+        context.shadowBlur = 10;
+        context.fillStyle = '#41d9ff';
+        context.translate(cx, cy);
+        context.rotate(item.angle);
+        context.beginPath();
+        context.moveTo(0, -10);
+        context.lineTo(7, 0);
+        context.lineTo(0, 10);
+        context.lineTo(-7, 0);
+        context.closePath();
+        context.fill();
+        context.fillStyle = '#eafcff';
+        context.beginPath();
+        context.moveTo(0, -5);
+        context.lineTo(3.5, 0);
+        context.lineTo(0, 5);
+        context.lineTo(-3.5, 0);
+        context.closePath();
+        context.fill();
+        context.restore();
+      } else if (item.kind === KIND_BOLT) {
+        const bx = item.x + item.width / 2;
+        const pierce = item.sub === 'pierce';
+        const half = pierce ? 7 : 3;
+        context.save();
+        context.globalCompositeOperation = 'lighter';
+        context.shadowColor = pierce ? '#ffd94a' : '#7df3ff';
+        context.shadowBlur = pierce ? 18 : 12;
         const grad = context.createLinearGradient(bx, item.y, bx, item.y + item.height);
-        grad.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
-        grad.addColorStop(0.5, '#7df3ff');
-        grad.addColorStop(1, 'rgba(57, 230, 255, 0.2)');
+        if (pierce) {
+          grad.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
+          grad.addColorStop(0.5, '#ffd94a');
+          grad.addColorStop(1, 'rgba(255, 150, 40, 0.2)');
+        } else {
+          grad.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
+          grad.addColorStop(0.5, '#7df3ff');
+          grad.addColorStop(1, 'rgba(57, 230, 255, 0.2)');
+        }
         context.fillStyle = grad;
-        context.fillRect(bx - 3, item.y, 6, item.height);
+        context.fillRect(bx - half, item.y, half * 2, item.height);
         context.fillStyle = 'rgba(255, 255, 255, 0.9)';
-        context.fillRect(bx - 1.5, item.y + 3, 3, item.height - 6);
+        context.fillRect(bx - half / 2, item.y + 3, half, item.height - 6);
         context.restore();
       } else if (item.kind === KIND_STAR) {
         const pulse = 1 + 0.16 * Math.sin(time * 5 + item.x);
@@ -605,14 +713,44 @@ export function createRenderer(canvas, particles) {
       context.stroke();
       context.restore();
     }
+
+    // Charge meter: fills gold while holding fire, red while overheated.
+    if (state.overheat > 0) {
+      const bw = 64;
+      const bx = ship.x + ship.width / 2 - bw / 2;
+      const by = ship.y + ship.height + 14;
+      context.fillStyle = 'rgba(0, 0, 0, 0.6)';
+      context.fillRect(bx - 2, by - 2, bw + 4, 10);
+      context.fillStyle = '#ff2a3d';
+      context.fillRect(bx, by, bw * Math.max(0, state.overheat / CHARGE.lockout), 6);
+      context.font = `700 13px ${FONT}`;
+      context.textAlign = 'center';
+      context.fillStyle = '#ff5a4e';
+      context.fillText('OVERHEATED!', ship.x + ship.width / 2, by + 24);
+    } else if (state.charge > 0.05) {
+      const fraction = Math.min(1, state.charge / CHARGE.full);
+      const bw = 64;
+      const bx = ship.x + ship.width / 2 - bw / 2;
+      const by = ship.y + ship.height + 14;
+      context.fillStyle = 'rgba(0, 0, 0, 0.6)';
+      context.fillRect(bx - 2, by - 2, bw + 4, 10);
+      context.fillStyle = fraction >= 1 ? '#ff9a3d' : '#7df3ff';
+      context.fillRect(bx, by, bw * fraction, 6);
+      if (fraction >= 0.5) {
+        context.font = `700 13px ${FONT}`;
+        context.textAlign = 'center';
+        context.fillStyle = '#ffd94a';
+        context.fillText('CHARGED!', ship.x + ship.width / 2, by + 24);
+      }
+    }
     context.globalAlpha = 1;
   }
 
   function drawHud(state, best) {
     context.textBaseline = 'top';
     text(scoreLabel(state.score), 26, 18, 34, PALETTE.text, 'left', 800);
-    const mult = state.combo >= 2 ? 1 + Math.floor(state.combo / COMBO.perStep) : 1;
-    if (state.combo >= 2) {
+    const mult = state.combo >= 1 ? 1 + Math.floor(state.combo / COMBO.perStep) : 1;
+    if (state.combo >= 1) {
       const comboText = `COMBO x${mult} · ${state.combo}`;
       // A fresh multiplier tier flashes the combo big and bright.
       const flash = Math.max(0, state.comboFlash || 0) / 0.5;
@@ -625,21 +763,24 @@ export function createRenderer(canvas, particles) {
       } else {
         text(comboText, 26, 58, 22, '#ffd94a', 'left', 800);
       }
+      // The combo window drains visibly, gold to red as it empties.
       const fraction = Math.max(0, state.comboTimer / COMBO.window);
+      const barColor = fraction > 0.5 ? '#ffd94a' : fraction > 0.25 ? '#ff9a3d' : '#ff5a4e';
       context.fillStyle = 'rgba(255, 217, 74, 0.25)';
       context.fillRect(26, 88, 170, 7);
-      context.fillStyle = '#ffd94a';
+      context.fillStyle = barColor;
       context.fillRect(26, 88, 170 * fraction, 7);
     }
     text(`WAVE ${state.wave}`, FIELD.width / 2, 18, 28, PALETTE.muted, 'center', 800);
+    if (state.theme) text(THEMES[state.theme].name, FIELD.width / 2, 50, 15, '#a78bfa', 'center', 700);
     // Wave progress bar.
     const waveFrac = (state.elapsed % WAVE.seconds) / WAVE.seconds;
     context.fillStyle = 'rgba(167, 139, 250, 0.3)';
-    context.fillRect(FIELD.width / 2 - 60, 54, 120, 5);
+    context.fillRect(FIELD.width / 2 - 60, 70, 120, 5);
     context.fillStyle = '#a78bfa';
-    context.fillRect(FIELD.width / 2 - 60, 54, 120 * waveFrac, 5);
+    context.fillRect(FIELD.width / 2 - 60, 70, 120 * waveFrac, 5);
     if (state.boss) {
-      text('⚠ DREADNOUGHT ⚠', FIELD.width / 2, 68, 20, '#ff5a4e', 'center', 800);
+      text('⚠ DREADNOUGHT ⚠', FIELD.width / 2, 84, 20, '#ff5a4e', 'center', 800);
     }
     const livesLabel = 'LIVES';
     text(livesLabel, FIELD.width - 26 - LIVES * 34 - 76, 22, 22, PALETTE.muted, 'right', 700);
@@ -715,6 +856,121 @@ export function createRenderer(canvas, particles) {
     context.restore();
   }
 
+  /** The black hole: a dark disc with a bright spinning accretion ring. */
+  function drawBlackHole(state) {
+    const hole = state.hole;
+    if (!hole || !hole.active) return;
+    context.save();
+    const disc = context.createRadialGradient(hole.x, hole.y, 0, hole.x, hole.y, 52);
+    disc.addColorStop(0, 'rgba(0, 0, 0, 1)');
+    disc.addColorStop(0.75, 'rgba(10, 2, 24, 0.95)');
+    disc.addColorStop(0.9, 'rgba(176, 123, 255, 0.55)');
+    disc.addColorStop(1, 'rgba(176, 123, 255, 0)');
+    context.fillStyle = disc;
+    context.beginPath();
+    context.arc(hole.x, hole.y, 52, 0, Math.PI * 2);
+    context.fill();
+    // A bright accretion ring, spinning.
+    context.save();
+    context.translate(hole.x, hole.y);
+    context.rotate(time * 1.2);
+    context.setLineDash([26, 14]);
+    context.lineDashOffset = -time * 60;
+    context.strokeStyle = 'rgba(255, 150, 60, 0.85)';
+    context.lineWidth = 5;
+    context.beginPath();
+    context.arc(0, 0, 62, 0, Math.PI * 2);
+    context.stroke();
+    context.setLineDash([10, 18]);
+    context.strokeStyle = 'rgba(176, 123, 255, 0.7)';
+    context.lineWidth = 3;
+    context.beginPath();
+    context.arc(0, 0, 74, 0, Math.PI * 2);
+    context.stroke();
+    context.restore();
+    context.restore();
+  }
+
+  /** The upgrade shop's row rectangles, in field coordinates, for drawing and clicks. */
+  function shopRows(panelY) {
+    const rows = [];
+    const x = (FIELD.width - SHOP_PANEL.width) / 2 + 40;
+    const width = SHOP_PANEL.width - 80;
+    let y = panelY + SHOP_PANEL.top + 10;
+    for (let index = 0; index < SHOP.length; index += 1) {
+      rows.push({ x, y, width, height: SHOP_ROW.height });
+      y += SHOP_ROW.height + SHOP_ROW.gap;
+    }
+    return rows;
+  }
+
+  /** Which shop row (or the continue button) a field point lands on, or null. */
+  function shopHit(x, y) {
+    const panelY = (FIELD.height - shopPanelHeight()) / 2;
+    const rows = shopRows(panelY);
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      if (x >= row.x && x <= row.x + row.width && y >= row.y && y <= row.y + row.height) return { type: 'buy', index };
+    }
+    const cx = (FIELD.width - SHOP_CONTINUE.width) / 2;
+    const cy = panelY + shopPanelHeight() - 66;
+    if (x >= cx && x <= cx + SHOP_CONTINUE.width && y >= cy && y <= cy + SHOP_CONTINUE.height) return { type: 'continue' };
+    return null;
+  }
+
+  function shopPanelHeight() {
+    return SHOP_PANEL.top + SHOP.length * (SHOP_ROW.height + SHOP_ROW.gap) + 96;
+  }
+
+  /** The between-wave shop: five upgrades for score, then continue. */
+  function drawShop(state, shop) {
+    const height = shopPanelHeight();
+    const x = (FIELD.width - SHOP_PANEL.width) / 2;
+    const y = (FIELD.height - height) / 2;
+    context.save();
+    context.fillStyle = 'rgba(4, 1, 12, 0.6)';
+    context.fillRect(0, 0, FIELD.width, FIELD.height);
+    panelRect(x, y, SHOP_PANEL.width, height, 18);
+    context.fillStyle = PALETTE.panel;
+    context.fill();
+    context.strokeStyle = PALETTE.panelEdge;
+    context.lineWidth = 2;
+    context.stroke();
+    context.textBaseline = 'alphabetic';
+    text(`WAVE ${state.wave} CLEARED — UPGRADE SHOP`, FIELD.width / 2, y + 58, 34, '#ffffff', 'center', 800);
+    text(`SCORE ${shop.score}  ·  Press 1-5 or click to buy, Enter to continue`, FIELD.width / 2, y + 96, 20, PALETTE.muted, 'center', 400);
+    const rows = shopRows(y);
+    for (let index = 0; index < shop.items.length; index += 1) {
+      const item = shop.items[index];
+      const row = rows[index];
+      panelRect(row.x, row.y, row.width, row.height, 10);
+      context.fillStyle = item.canBuy ? 'rgba(59, 35, 112, 0.9)' : 'rgba(21, 11, 40, 0.85)';
+      context.fill();
+      context.strokeStyle = item.canBuy ? '#ffd94a' : PALETTE.panelEdge;
+      context.lineWidth = 1.5;
+      context.stroke();
+      text(`[${index + 1}]`, row.x + 16, row.y + 35, 22, item.canBuy ? '#ffd94a' : PALETTE.muted, 'left', 800);
+      text(item.name, row.x + 70, row.y + 26, 22, '#ffffff', 'left', 800);
+      text(item.desc, row.x + 70, row.y + 48, 16, PALETTE.muted, 'left', 400);
+      // Level pips.
+      for (let p = 0; p < item.maxLevel; p += 1) {
+        context.fillStyle = p < item.level ? '#7dffb0' : 'rgba(255, 255, 255, 0.18)';
+        context.beginPath();
+        context.arc(row.x + row.width - 200 + p * 22, row.y + 28, 7, 0, Math.PI * 2);
+        context.fill();
+      }
+      const right = item.note || `$${item.cost}`;
+      text(right, row.x + row.width - 16, row.y + 35, 22, item.canBuy ? '#ffd94a' : item.note ? '#7dffb0' : '#ff5a4e', 'right', 800);
+    }
+    const cx = (FIELD.width - SHOP_CONTINUE.width) / 2;
+    const cy = y + height - 66;
+    panelRect(cx, cy, SHOP_CONTINUE.width, SHOP_CONTINUE.height, 12);
+    context.fillStyle = '#ffd94a';
+    context.fill();
+    text('CONTINUE  [Enter]', FIELD.width / 2, cy + 31, 22, '#14092b', 'center', 800);
+    context.restore();
+  }
+
   const TITLE_LINES = [
     'Pilot your ship through the meteor storm.',
     'Catch stars to build your combo. Close dodges pay extra.',
@@ -742,7 +998,7 @@ export function createRenderer(canvas, particles) {
   }
 
   /** Paint one frame: the field, then the HUD or a panel for the screen the game is on. */
-  function draw(state, screen, best, isNewBest) {
+  function draw(state, screen, best, isNewBest, shop) {
     context.setTransform(1, 0, 0, 1, 0, 0);
     context.fillStyle = PALETTE.backdrop;
     context.fillRect(0, 0, canvas.width, canvas.height);
@@ -751,6 +1007,7 @@ export function createRenderer(canvas, particles) {
     context.setTransform(view.scale, 0, 0, view.scale, view.x + shakeX * view.scale, view.y + shakeY * view.scale);
     context.drawImage(background, 0, 0);
     drawStarfield();
+    drawBlackHole(state);
     drawItems(state, screen);
     if (screen !== SCREEN_TITLE) drawShip(state);
     else {
@@ -822,6 +1079,8 @@ export function createRenderer(canvas, particles) {
     }
     if (screen === SCREEN_PAUSED) {
       drawPanel('PAUSED', PAUSED_LINES, 'Press P to resume', '#a78bfa');
+    } else if (screen === SCREEN_SHOP && shop) {
+      drawShop(state, shop);
     } else if (screen === SCREEN_OVER) {
       OVER_LINES[0] = finalLabel(state.score);
       OVER_LINES[1] = bestLabel(best);
@@ -835,5 +1094,5 @@ export function createRenderer(canvas, particles) {
 
   resize();
   window.addEventListener('resize', resize);
-  return { draw, update, shake, flash };
+  return { draw, update, shake, flash, shopHit };
 }
