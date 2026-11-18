@@ -12,10 +12,14 @@ import { createRandom } from './random.js';
 import {
   createWorld,
   EVENT_BLOCKED,
+  EVENT_BOMB,
+  EVENT_BOSS,
   EVENT_HIT,
+  EVENT_KILL,
   EVENT_NEAR,
   EVENT_OVER,
   EVENT_POWERUP,
+  EVENT_SHOOT,
   EVENT_STAR,
   EVENT_WAVE,
   KIND_STAR,
@@ -71,6 +75,16 @@ function runShot(name) {
         bursts += 1;
       }
     }
+  }
+  if (name === 'storm' && world.state.boss !== null && world.state.boss.active) {
+    // The dreadnought mid-explosion: a big burst and a shockwave ring at its hull.
+    const boss = world.state.boss;
+    const bx = boss.x + boss.width / 2;
+    const by = boss.y + boss.height / 2;
+    particles.burst(bx, by, '#ff5a4e', 26, 380, 5);
+    particles.burst(bx, by, '#ffd94a', 16, 300, 4);
+    particles.ring(bx, by, '#ff5a4e', 200);
+    particles.ring(bx, by, '#ffd94a', 140);
   }
   let painted = 0;
   function paint() {
@@ -144,6 +158,21 @@ function runGame() {
   function react(events) {
     if (events & EVENT_STAR) audio.star(world.state.combo);
     if (events & EVENT_NEAR) audio.nearMiss();
+    if (events & EVENT_SHOOT) audio.shoot();
+    if (events & EVENT_KILL) {
+      audio.explode();
+      renderer.shake(4);
+    }
+    if (events & EVENT_BOMB) {
+      audio.explode();
+      renderer.shake(SHAKE.hit * 2);
+      renderer.flash(1);
+    }
+    if (events & EVENT_BOSS) {
+      audio.bossDie();
+      renderer.shake(SHAKE.hit * 2);
+      renderer.flash(1);
+    }
     if (events & EVENT_HIT) {
       audio.hit();
       renderer.shake(SHAKE.hit);
@@ -163,10 +192,10 @@ function runGame() {
 
   function step() {
     if (screen === SCREEN_TITLE) {
-      world.step(STEP, { direction: 0, pointerX: null }, true);
+      world.step(STEP, { direction: 0, pointerX: null, firing: false }, true);
       return;
     }
-    const events = world.step(STEP, { direction: input.direction(), pointerX: input.pointerTarget() }, false);
+    const events = world.step(STEP, { direction: input.direction(), pointerX: input.pointerTarget(), firing: input.firing() }, false);
     react(events);
   }
 
@@ -191,7 +220,7 @@ function runGame() {
       const ship = world.state.ship;
       particles.ember(ship.x + ship.width / 2, ship.y + ship.height - 2, '#ffb347');
       particles.ember(ship.x + ship.width / 2, ship.y + ship.height - 2, '#39e6ff');
-      audio.updateMusic();
+      audio.updateMusic(world.state.wave, world.state.boss !== null);
     }
     renderer.draw(world.state, screen, best, isNewBest);
   }

@@ -1,12 +1,12 @@
 // Drawing only: the world's state and the current screen in, pixels out. The 1280x720
 // playfield is scaled to fit the window and centred, the margin filled with the backdrop
 // colour. Sprites are painted once at boot onto offscreen canvases (a glowing ship,
-// jagged meteors, sparkle stars, power-up orbs), so a frame is mostly drawImage calls;
-// the starfield scrolls in three parallax layers behind them. The HUD shows score,
-// combo, wave, lives and the live power-ups; panels carry the title, pause and
-// game-over screens.
-import { COMBO, FIELD, FONT, LIVES, PALETTE, POWERUPS } from './config.js';
-import { KIND_METEOR, KIND_POWERUP, KIND_STAR } from './world.js';
+// jagged meteors, sparkle stars, power-up orbs, the dreadnought), so a frame is mostly
+// drawImage calls; the starfield scrolls in three parallax layers behind them. The HUD
+// shows score, combo, wave, lives and the live power-ups; panels carry the title,
+// pause and game-over screens.
+import { COMBO, FIELD, FONT, LIVES, PALETTE, POWERUPS, WAVE } from './config.js';
+import { KIND_BOLT, KIND_BOSS, KIND_METEOR, KIND_POWERUP, KIND_STAR } from './world.js';
 
 export const SCREEN_TITLE = 'title';
 export const SCREEN_PLAY = 'play';
@@ -61,13 +61,16 @@ export function createRenderer(canvas, particles) {
     sky.addColorStop(1, '#241040');
     bg.fillStyle = sky;
     bg.fillRect(0, 0, FIELD.width, FIELD.height);
-    // Nebula blobs: soft radial washes of violet, teal and magenta.
+    // Nebula blobs: big soft radial washes of violet, teal, magenta and ember.
     const blobs = [
-      [300, 150, 320, 'rgba(88, 40, 180, 0.20)'],
-      [950, 110, 280, 'rgba(20, 120, 160, 0.16)'],
-      [1150, 480, 300, 'rgba(180, 40, 140, 0.13)'],
-      [180, 520, 260, 'rgba(60, 30, 140, 0.16)'],
-      [640, 330, 380, 'rgba(40, 20, 90, 0.12)'],
+      [300, 150, 340, 'rgba(96, 44, 200, 0.30)'],
+      [950, 110, 300, 'rgba(24, 130, 180, 0.24)'],
+      [1150, 480, 320, 'rgba(200, 44, 150, 0.20)'],
+      [180, 520, 280, 'rgba(70, 34, 160, 0.24)'],
+      [640, 330, 400, 'rgba(44, 22, 100, 0.18)'],
+      [700, 80, 260, 'rgba(160, 40, 120, 0.16)'],
+      [60, 300, 240, 'rgba(20, 90, 140, 0.18)'],
+      [1150, 200, 220, 'rgba(220, 90, 60, 0.12)'],
     ];
     for (const [x, y, radius, color] of blobs) {
       const wash = bg.createRadialGradient(x, y, 0, x, y, radius);
@@ -76,10 +79,38 @@ export function createRenderer(canvas, particles) {
       bg.fillStyle = wash;
       bg.fillRect(x - radius, y - radius, radius * 2, radius * 2);
     }
+    // A blazing sun low on the left.
+    const sun = bg.createRadialGradient(170, 100, 0, 170, 100, 140);
+    sun.addColorStop(0, 'rgba(255, 250, 220, 0.9)');
+    sun.addColorStop(0.25, 'rgba(255, 220, 130, 0.45)');
+    sun.addColorStop(1, 'rgba(255, 180, 80, 0)');
+    bg.fillStyle = sun;
+    bg.fillRect(30, -40, 280, 280);
+    // A ringed planet high on the right.
+    const px = 1020;
+    const py = 118;
+    const pr = 56;
+    const planet = bg.createRadialGradient(px - 18, py - 18, 8, px, py, pr);
+    planet.addColorStop(0, '#f0d49a');
+    planet.addColorStop(0.6, '#c08a4a');
+    planet.addColorStop(1, '#7a4a28');
+    bg.fillStyle = planet;
+    bg.beginPath();
+    bg.arc(px, py, pr, 0, Math.PI * 2);
+    bg.fill();
+    bg.save();
+    bg.translate(px, py);
+    bg.rotate(-0.4);
+    bg.strokeStyle = 'rgba(216, 184, 120, 0.75)';
+    bg.lineWidth = 7;
+    bg.beginPath();
+    bg.ellipse(0, 0, pr * 1.7, pr * 0.42, 0, 0, Math.PI * 2);
+    bg.stroke();
+    bg.restore();
     // Horizon glow along the ship's band.
     const horizon = bg.createLinearGradient(0, FIELD.shipY - 90, 0, FIELD.height);
     horizon.addColorStop(0, 'rgba(120, 70, 220, 0)');
-    horizon.addColorStop(1, 'rgba(120, 70, 220, 0.16)');
+    horizon.addColorStop(1, 'rgba(120, 70, 220, 0.24)');
     bg.fillStyle = horizon;
     bg.fillRect(0, FIELD.shipY - 90, FIELD.width, FIELD.height - FIELD.shipY + 90);
   })();
@@ -91,7 +122,7 @@ export function createRenderer(canvas, particles) {
     { speed: 55, size: 2.6, alpha: 1, stars: [] },
   ];
   starLayers.forEach((layer, layerIndex) => {
-    for (let index = 0; index < 46; index += 1) {
+    for (let index = 0; index < 80; index += 1) {
       layer.stars.push({
         x: hash(layerIndex + 1, index * 3 + 1) * FIELD.width,
         y: hash(layerIndex + 1, index * 3 + 2) * FIELD.height,
@@ -99,15 +130,25 @@ export function createRenderer(canvas, particles) {
       });
     }
   });
+  // A few big sparkle stars with a cross flare.
+  const bigStars = [];
+  for (let index = 0; index < 7; index += 1) {
+    bigStars.push({
+      x: hash(7, index * 5 + 1) * FIELD.width,
+      y: hash(7, index * 5 + 2) * (FIELD.height - 120) + 40,
+      size: 3.5 + hash(7, index * 5 + 3) * 2.5,
+      phase: hash(7, index * 5 + 4) * Math.PI * 2,
+    });
+  }
 
-  function paintMeteorSprite(size) {
+  function paintRockSprite(size, fill, edge, glow) {
     const pad = 14;
     const sprite = makeCanvas(size + pad * 2, size + pad * 2);
     const ctx = sprite.getContext('2d');
     const centre = size / 2 + pad;
     const radius = size / 2;
     ctx.save();
-    ctx.shadowColor = '#ff5a4e';
+    ctx.shadowColor = glow;
     ctx.shadowBlur = 12;
     ctx.beginPath();
     const points = 9;
@@ -120,10 +161,10 @@ export function createRenderer(canvas, particles) {
       else ctx.lineTo(x, y);
     }
     ctx.closePath();
-    ctx.fillStyle = '#4a2320';
+    ctx.fillStyle = fill;
     ctx.fill();
     ctx.shadowBlur = 0;
-    ctx.strokeStyle = '#ff8a7a';
+    ctx.strokeStyle = edge;
     ctx.lineWidth = 2.5;
     ctx.stroke();
     // Craters.
@@ -138,12 +179,90 @@ export function createRenderer(canvas, particles) {
     ctx.restore();
     return sprite;
   }
+
+  function paintDartSprite(size) {
+    const pad = 12;
+    const sprite = makeCanvas(size + pad * 2, size + pad * 2);
+    const ctx = sprite.getContext('2d');
+    ctx.save();
+    ctx.translate(size / 2 + pad, size / 2 + pad);
+    ctx.shadowColor = '#ffb347';
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = '#5a2a08';
+    ctx.beginPath();
+    ctx.moveTo(0, -size / 2);
+    ctx.lineTo(size * 0.32, size * 0.1);
+    ctx.lineTo(size * 0.5, size * 0.42);
+    ctx.lineTo(0, size * 0.2);
+    ctx.lineTo(-size * 0.5, size * 0.42);
+    ctx.lineTo(-size * 0.32, size * 0.1);
+    ctx.closePath();
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#ffb347';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+    ctx.fillStyle = '#ffe9b0';
+    ctx.beginPath();
+    ctx.arc(0, -size * 0.12, size * 0.07, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    return sprite;
+  }
+
+  const bossSprite = (function paintBoss() {
+    const sprite = makeCanvas(280, 220);
+    const ctx = sprite.getContext('2d');
+    const cx = 140;
+    const cy = 110;
+    ctx.save();
+    ctx.shadowColor = '#ff2a3d';
+    ctx.shadowBlur = 24;
+    ctx.beginPath();
+    const points = 13;
+    for (let i = 0; i <= points; i += 1) {
+      const angle = (i / points) * Math.PI * 2;
+      const r = 95 * (0.72 + hash(999, i) * 0.28);
+      const x = cx + Math.cos(angle) * r;
+      const y = cy + Math.sin(angle) * r * 0.78;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = '#3a1420';
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#ff6a5a';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+    const core = ctx.createRadialGradient(cx, cy, 0, cx, cy, 44);
+    core.addColorStop(0, 'rgba(255, 240, 200, 0.95)');
+    core.addColorStop(0.4, 'rgba(255, 90, 60, 0.8)');
+    core.addColorStop(1, 'rgba(255, 40, 40, 0)');
+    ctx.fillStyle = core;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 44, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    for (let i = 0; i < 5; i += 1) {
+      ctx.beginPath();
+      ctx.arc(cx + (hash(999, i + 30) - 0.5) * 130, cy + (hash(999, i + 50) - 0.5) * 90, 10 + hash(999, i + 70) * 12, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+    return sprite;
+  })();
+
   const meteorSprites = {
-    shard: paintMeteorSprite(40),
-    rock: paintMeteorSprite(72),
-    boulder: paintMeteorSprite(128),
+    shard: paintRockSprite(40, '#5a2a18', '#ff9a5a', '#ff7a3d'),
+    rock: paintRockSprite(72, '#4a2320', '#ff8a7a', '#ff5a4e'),
+    boulder: paintRockSprite(128, '#3a1a30', '#ff6a9a', '#e04080'),
+    dart: paintDartSprite(44),
+    brute: paintRockSprite(132, '#2a1a3a', '#b07dff', '#8a5aff'),
+    splitter: paintRockSprite(76, '#1a3a24', '#7dffb0', '#41d97d'),
+    weaver: paintRockSprite(56, '#0a3a3a', '#5affd9', '#2affc9'),
   };
-  const meteorSpriteSize = { shard: 68, rock: 100, boulder: 156 };
+  const meteorSpriteSize = { shard: 68, rock: 100, boulder: 156, dart: 68, brute: 160, splitter: 104, weaver: 84 };
 
   const starSprite = (function paintStar() {
     const sprite = makeCanvas(56, 56);
@@ -274,9 +393,29 @@ export function createRenderer(canvas, particles) {
       }
     }
     context.globalAlpha = 1;
+    for (const star of bigStars) {
+      const twinkle = 0.6 + 0.4 * Math.sin(time * 1.5 + star.phase);
+      const s = star.size;
+      context.save();
+      context.globalAlpha = twinkle;
+      context.strokeStyle = '#ffffff';
+      context.lineWidth = 1.5;
+      context.beginPath();
+      context.moveTo(star.x - s * 2, star.y);
+      context.lineTo(star.x + s * 2, star.y);
+      context.moveTo(star.x, star.y - s * 2);
+      context.lineTo(star.x, star.y + s * 2);
+      context.stroke();
+      context.fillStyle = '#ffffff';
+      context.beginPath();
+      context.arc(star.x, star.y, s * 0.7, 0, Math.PI * 2);
+      context.fill();
+      context.restore();
+    }
+    context.globalAlpha = 1;
   }
 
-  function drawItems(state) {
+  function drawItems(state, screen) {
     const items = state.items;
     for (let index = 0; index < items.length; index += 1) {
       const item = items[index];
@@ -291,12 +430,94 @@ export function createRenderer(canvas, particles) {
         context.rotate(item.angle);
         context.drawImage(sprite, -drawSize / 2, -drawSize / 2, drawSize, drawSize);
         context.restore();
+      } else if (item.kind === KIND_BOSS) {
+        const drawW = item.width * 1.15;
+        const drawH = item.height * 1.05;
+        const bossCx = item.x + item.width / 2;
+        const bossCy = item.y + item.height / 2;
+        // Rotating dashed outer ring, for menace.
+        context.save();
+        context.translate(bossCx, bossCy);
+        context.rotate(time * 0.5);
+        context.setLineDash([14, 10]);
+        context.lineDashOffset = -time * 30;
+        context.strokeStyle = 'rgba(255, 90, 78, 0.55)';
+        context.lineWidth = 3;
+        context.beginPath();
+        context.arc(0, 0, 132, 0, Math.PI * 2);
+        context.stroke();
+        context.setLineDash([]);
+        context.restore();
+        // Four glowing turret dots, pulsing as if about to fire.
+        const turretPulse = 0.6 + 0.4 * Math.sin(time * 5);
+        context.save();
+        context.globalCompositeOperation = 'lighter';
+        context.fillStyle = '#ff8a7a';
+        context.shadowColor = '#ff2a3d';
+        context.shadowBlur = 12 * turretPulse;
+        for (let t = 0; t < 4; t += 1) {
+          const a = (t / 4) * Math.PI * 2 + 0.4;
+          context.beginPath();
+          context.arc(bossCx + Math.cos(a) * 118, bossCy + Math.sin(a) * 88, 5, 0, Math.PI * 2);
+          context.fill();
+        }
+        context.restore();
+        context.save();
+        context.translate(bossCx, bossCy);
+        context.rotate(Math.sin(time * 0.7) * 0.06);
+        context.drawImage(bossSprite, -drawW / 2, -drawH / 2, drawW, drawH);
+        context.restore();
+        // Health bar above the dreadnought — or below it when it drifts to the
+        // far left, where the bar would cover the score. Never over a panel.
+        if (screen === SCREEN_OVER || screen === SCREEN_TITLE) {
+          // Panels cover the field; a bar peeking from behind one reads as a bug.
+        } else {
+          const bw = 180;
+          const bx = item.x + item.width / 2 - bw / 2;
+          const by = item.x + item.width / 2 < 420 ? item.y + item.height + 12 : item.y - 28;
+          context.fillStyle = 'rgba(0, 0, 0, 0.6)';
+          context.fillRect(bx - 2, by - 2, bw + 4, 12);
+          context.fillStyle = '#ff2a3d';
+          context.fillRect(bx, by, bw * Math.max(0, state.bossHp / Math.max(1, state.bossMaxHp)), 8);
+          context.fillStyle = '#ffd94a';
+          context.font = `700 13px ${FONT}`;
+          context.textAlign = 'center';
+          context.textBaseline = 'alphabetic';
+          context.fillText('DREADNOUGHT', item.x + item.width / 2, by - 8);
+        }
+      } else if (item.kind === KIND_BOLT) {
+        const bx = item.x + item.width / 2;
+        context.save();
+        context.globalCompositeOperation = 'lighter';
+        context.shadowColor = '#7df3ff';
+        context.shadowBlur = 12;
+        const grad = context.createLinearGradient(bx, item.y, bx, item.y + item.height);
+        grad.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
+        grad.addColorStop(0.5, '#7df3ff');
+        grad.addColorStop(1, 'rgba(57, 230, 255, 0.2)');
+        context.fillStyle = grad;
+        context.fillRect(bx - 3, item.y, 6, item.height);
+        context.fillStyle = 'rgba(255, 255, 255, 0.9)';
+        context.fillRect(bx - 1.5, item.y + 3, 3, item.height - 6);
+        context.restore();
       } else if (item.kind === KIND_STAR) {
-        const pulse = 1 + 0.12 * Math.sin(time * 5 + item.x);
+        const pulse = 1 + 0.16 * Math.sin(time * 5 + item.x);
         const size = item.width * 2 * pulse;
+        const cx = item.x + item.width / 2;
+        const cy = item.y + item.height / 2;
+        context.save();
+        context.globalCompositeOperation = 'lighter';
+        const halo = context.createRadialGradient(cx, cy, 0, cx, cy, size * 0.9);
+        halo.addColorStop(0, 'rgba(255, 217, 74, 0.5)');
+        halo.addColorStop(1, 'rgba(255, 217, 74, 0)');
+        context.fillStyle = halo;
+        context.beginPath();
+        context.arc(cx, cy, size * 0.9, 0, Math.PI * 2);
+        context.fill();
+        context.restore();
         context.save();
         context.globalAlpha = 0.95;
-        context.drawImage(starSprite, item.x + item.width / 2 - size / 2, item.y + item.height / 2 - size / 2, size, size);
+        context.drawImage(starSprite, cx - size / 2, cy - size / 2, size, size);
         context.restore();
       } else if (item.kind === KIND_POWERUP) {
         const bob = Math.sin(time * 3 + item.x) * 3;
@@ -312,8 +533,8 @@ export function createRenderer(canvas, particles) {
       // Blink while invulnerable: the ship is there, just hard to see.
       context.globalAlpha = 0.35;
     }
-    // Engine flame, flickering.
-    const flameLength = 20 + Math.sin(time * 31) * 6 + Math.random() * 5;
+    // Engine flame, flickering, with a hot white core.
+    const flameLength = 30 + Math.sin(time * 31) * 8 + Math.random() * 6;
     context.save();
     context.globalCompositeOperation = 'lighter';
     const flame = context.createLinearGradient(0, ship.y + ship.height - 6, 0, ship.y + ship.height + flameLength);
@@ -322,17 +543,55 @@ export function createRenderer(canvas, particles) {
     flame.addColorStop(1, 'rgba(255, 80, 40, 0)');
     context.fillStyle = flame;
     context.beginPath();
-    context.moveTo(ship.x + ship.width / 2 - 9, ship.y + ship.height - 4);
-    context.lineTo(ship.x + ship.width / 2 + 9, ship.y + ship.height - 4);
+    context.moveTo(ship.x + ship.width / 2 - 10, ship.y + ship.height - 4);
+    context.lineTo(ship.x + ship.width / 2 + 10, ship.y + ship.height - 4);
     context.lineTo(ship.x + ship.width / 2, ship.y + ship.height + flameLength);
     context.closePath();
     context.fill();
+    const core = context.createLinearGradient(0, ship.y + ship.height - 6, 0, ship.y + ship.height + flameLength * 0.55);
+    core.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
+    core.addColorStop(1, 'rgba(255, 200, 90, 0)');
+    context.fillStyle = core;
+    context.beginPath();
+    context.moveTo(ship.x + ship.width / 2 - 5, ship.y + ship.height - 4);
+    context.lineTo(ship.x + ship.width / 2 + 5, ship.y + ship.height - 4);
+    context.lineTo(ship.x + ship.width / 2, ship.y + ship.height + flameLength * 0.55);
+    context.closePath();
+    context.fill();
+    context.restore();
+
+    // Engine trail: fading dots behind the ship, swaying with a fixed rhythm.
+    context.save();
+    context.globalCompositeOperation = 'lighter';
+    for (let t = 0; t < 5; t += 1) {
+      const trailY = ship.y + ship.height + 34 + t * 16;
+      const trailX = ship.x + ship.width / 2 + Math.sin(time * 6 + t * 1.3) * (3 + t * 1.5);
+      const trailAlpha = 0.5 - t * 0.09;
+      context.globalAlpha = Math.max(0, trailAlpha);
+      context.fillStyle = t % 2 === 0 ? '#ffb347' : '#39e6ff';
+      context.beginPath();
+      context.arc(trailX, trailY, 4 - t * 0.5, 0, Math.PI * 2);
+      context.fill();
+    }
     context.restore();
 
     context.save();
     context.translate(ship.x + ship.width / 2, ship.y + ship.height / 2);
     context.rotate(ship.tilt);
-    context.drawImage(shipSprite, -55, -42, 110, 84);
+    context.drawImage(shipSprite, -65, -50, 130, 100);
+    context.restore();
+
+    // Wing lights, glowing cyan.
+    context.save();
+    context.globalCompositeOperation = 'lighter';
+    context.fillStyle = '#7df3ff';
+    context.shadowColor = '#39e6ff';
+    context.shadowBlur = 8;
+    for (const side of [-1, 1]) {
+      context.beginPath();
+      context.arc(ship.x + ship.width / 2 + side * 34, ship.y + ship.height / 2 + 24, 4, 0, Math.PI * 2);
+      context.fill();
+    }
     context.restore();
 
     if (state.shield) {
@@ -342,7 +601,7 @@ export function createRenderer(canvas, particles) {
       context.strokeStyle = '#41d9ff';
       context.lineWidth = 3;
       context.beginPath();
-      context.arc(ship.x + ship.width / 2, ship.y + ship.height / 2, 52, 0, Math.PI * 2);
+      context.arc(ship.x + ship.width / 2, ship.y + ship.height / 2, 58, 0, Math.PI * 2);
       context.stroke();
       context.restore();
     }
@@ -351,18 +610,37 @@ export function createRenderer(canvas, particles) {
 
   function drawHud(state, best) {
     context.textBaseline = 'top';
-    text(scoreLabel(state.score), 26, 20, 30, PALETTE.text, 'left', 700);
+    text(scoreLabel(state.score), 26, 18, 34, PALETTE.text, 'left', 800);
     const mult = state.combo >= 2 ? 1 + Math.floor(state.combo / COMBO.perStep) : 1;
     if (state.combo >= 2) {
       const comboText = `COMBO x${mult} · ${state.combo}`;
-      text(comboText, 26, 56, 20, '#ffd94a', 'left', 700);
+      // A fresh multiplier tier flashes the combo big and bright.
+      const flash = Math.max(0, state.comboFlash || 0) / 0.5;
+      if (flash > 0) {
+        context.save();
+        context.shadowColor = '#ffd94a';
+        context.shadowBlur = 18 * flash;
+        text(comboText, 26, 58, 22 + flash * 8, '#ffd94a', 'left', 800);
+        context.restore();
+      } else {
+        text(comboText, 26, 58, 22, '#ffd94a', 'left', 800);
+      }
       const fraction = Math.max(0, state.comboTimer / COMBO.window);
       context.fillStyle = 'rgba(255, 217, 74, 0.25)';
-      context.fillRect(26, 82, 130, 6);
+      context.fillRect(26, 88, 170, 7);
       context.fillStyle = '#ffd94a';
-      context.fillRect(26, 82, 130 * fraction, 6);
+      context.fillRect(26, 88, 170 * fraction, 7);
     }
-    text(`WAVE ${state.wave}`, FIELD.width / 2, 20, 26, PALETTE.muted, 'center', 700);
+    text(`WAVE ${state.wave}`, FIELD.width / 2, 18, 28, PALETTE.muted, 'center', 800);
+    // Wave progress bar.
+    const waveFrac = (state.elapsed % WAVE.seconds) / WAVE.seconds;
+    context.fillStyle = 'rgba(167, 139, 250, 0.3)';
+    context.fillRect(FIELD.width / 2 - 60, 54, 120, 5);
+    context.fillStyle = '#a78bfa';
+    context.fillRect(FIELD.width / 2 - 60, 54, 120 * waveFrac, 5);
+    if (state.boss) {
+      text('⚠ DREADNOUGHT ⚠', FIELD.width / 2, 68, 20, '#ff5a4e', 'center', 800);
+    }
     const livesLabel = 'LIVES';
     text(livesLabel, FIELD.width - 26 - LIVES * 34 - 76, 22, 22, PALETTE.muted, 'right', 700);
     for (let life = 0; life < LIVES; life += 1) {
@@ -383,20 +661,22 @@ export function createRenderer(canvas, particles) {
     if (state.magnetTimer > 0) chips.push({ label: 'MAGNET', color: POWERUPS.magnet.color, fraction: state.magnetTimer / POWERUPS.magnet.duration });
     if (state.slowTimer > 0) chips.push({ label: 'SLOW-MO', color: POWERUPS.slow.color, fraction: state.slowTimer / POWERUPS.slow.duration });
     if (state.doubleTimer > 0) chips.push({ label: 'DOUBLE x2', color: POWERUPS.double.color, fraction: state.doubleTimer / POWERUPS.double.duration });
+    if (state.spreadTimer > 0) chips.push({ label: 'SPREAD x3', color: POWERUPS.spread.color, fraction: state.spreadTimer / POWERUPS.spread.duration });
+    if (state.frenzyTimer > 0) chips.push({ label: 'FRENZY!', color: POWERUPS.frenzy.color, fraction: state.frenzyTimer / POWERUPS.frenzy.duration });
     let chipX = 26;
     for (const chip of chips) {
       context.font = `700 16px ${FONT}`;
       const labelWidth = context.measureText(chip.label).width;
       const width = labelWidth + 24;
-      panelRect(chipX, 100, width, 26, 13);
+      panelRect(chipX, 108, width, 26, 13);
       context.fillStyle = 'rgba(21, 11, 40, 0.85)';
       context.fill();
       context.strokeStyle = chip.color;
       context.lineWidth = 1.5;
       context.stroke();
       context.fillStyle = chip.color;
-      context.fillRect(chipX + 6, 100 + 22, (width - 12) * Math.max(0, chip.fraction), 3);
-      text(chip.label, chipX + width / 2, 105, 16, chip.color, 'center', 700);
+      context.fillRect(chipX + 6, 108 + 22, (width - 12) * Math.max(0, chip.fraction), 3);
+      text(chip.label, chipX + width / 2, 113, 16, chip.color, 'center', 700);
       chipX += width + 10;
     }
   }
@@ -421,13 +701,13 @@ export function createRenderer(canvas, particles) {
     titleGradient.addColorStop(1, '#ff5ad1');
     context.save();
     context.shadowColor = accent || '#39e6ff';
-    context.shadowBlur = 24;
-    text(title, FIELD.width / 2, y + 86, 56, '#ffffff', 'center', 800);
+    context.shadowBlur = 22 + 10 * Math.sin(time * 2);
+    text(title, FIELD.width / 2, y + 88, 64, '#ffffff', 'center', 800);
     context.restore();
     context.fillStyle = titleGradient;
-    context.font = `800 56px ${FONT}`;
+    context.font = `800 64px ${FONT}`;
     context.textAlign = 'center';
-    context.fillText(title, FIELD.width / 2, y + 86);
+    context.fillText(title, FIELD.width / 2, y + 88);
     for (let index = 0; index < lines.length; index += 1) {
       text(lines[index], FIELD.width / 2, y + PANEL.top + index * PANEL.line, 22, PALETTE.muted, 'center', 400);
     }
@@ -438,12 +718,13 @@ export function createRenderer(canvas, particles) {
   const TITLE_LINES = [
     'Pilot your ship through the meteor storm.',
     'Catch stars to build your combo. Close dodges pay extra.',
-    'Grab orbs: Shield · Magnet · Slow-Mo · Double Score.',
+    'SPACE or CLICK to fire — shatter meteors, down the dreadnought.',
+    'Grab orbs: Shield · Magnet · Slow-Mo · Double · Spread · Frenzy · Bomb.',
     'Steer with ← → / A D or the mouse. P pauses, M mutes.',
     '',
   ];
   const PAUSED_LINES = ['The storm is waiting for you.'];
-  const OVER_LINES = ['', '', ''];
+  const OVER_LINES = ['', '', '', '', ''];
 
   /** Advance the starfield, the shake and the flash by `dt` seconds. */
   function update(dt) {
@@ -470,7 +751,7 @@ export function createRenderer(canvas, particles) {
     context.setTransform(view.scale, 0, 0, view.scale, view.x + shakeX * view.scale, view.y + shakeY * view.scale);
     context.drawImage(background, 0, 0);
     drawStarfield();
-    drawItems(state);
+    drawItems(state, screen);
     if (screen !== SCREEN_TITLE) drawShip(state);
     else {
       // The title screen's ship idles at the centre of the field, engine lit.
@@ -479,11 +760,62 @@ export function createRenderer(canvas, particles) {
     }
     particles.draw(context);
     if (screen === SCREEN_TITLE) {
-      TITLE_LINES[4] = bestLabel(best);
+      // Shooting-star streaks sweeping the sky behind the panel.
+      context.save();
+      context.globalCompositeOperation = 'lighter';
+      for (let s = 0; s < 3; s += 1) {
+        const cycle = (time * 0.35 + s * 0.33) % 1;
+        const sx = 150 + s * 420 + cycle * 500;
+        const sy = 60 + s * 130 - cycle * 260;
+        const streak = context.createLinearGradient(sx, sy, sx - 110, sy + 44);
+        streak.addColorStop(0, `rgba(255, 255, 255, ${0.85 * (1 - cycle)})`);
+        streak.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        context.strokeStyle = streak;
+        context.lineWidth = 2.5;
+        context.beginPath();
+        context.moveTo(sx, sy);
+        context.lineTo(sx - 110, sy + 44);
+        context.stroke();
+      }
+      context.restore();
+      TITLE_LINES[5] = bestLabel(best);
       drawPanel('STARFALL', TITLE_LINES, 'Press Space or click to launch');
+      // The seven power-up orbs in a row, under the instructions.
+      const panelHeight = PANEL.top + TITLE_LINES.length * PANEL.line + PANEL.bottom;
+      const panelY = (FIELD.height - panelHeight) / 2;
+      const orbY = panelY + panelHeight - 92;
+      const orbNames = Object.keys(POWERUPS);
+      const orbSize = 34;
+      const orbGap = 52;
+      const orbStartX = FIELD.width / 2 - ((orbNames.length - 1) * orbGap) / 2;
+      for (let o = 0; o < orbNames.length; o += 1) {
+        const bob = Math.sin(time * 3 + o * 0.9) * 3;
+        context.drawImage(orbSprites[orbNames[o]], orbStartX + o * orbGap - orbSize / 2, orbY + bob, orbSize, orbSize);
+      }
       return;
     }
     drawHud(state, best);
+    // Vignette: darkened corners, so the action pops in the middle.
+    const vignette = context.createRadialGradient(
+      FIELD.width / 2, FIELD.height / 2, FIELD.height * 0.45,
+      FIELD.width / 2, FIELD.height / 2, FIELD.height * 0.95,
+    );
+    vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    vignette.addColorStop(1, 'rgba(2, 0, 10, 0.42)');
+    context.fillStyle = vignette;
+    context.fillRect(0, 0, FIELD.width, FIELD.height);
+    // Danger pulse: red edges closing in on the last life.
+    if (screen === SCREEN_PLAY && state.lives === 1) {
+      const danger = 0.14 + 0.1 * Math.sin(time * 3);
+      const edge = context.createRadialGradient(
+        FIELD.width / 2, FIELD.height / 2, FIELD.height * 0.42,
+        FIELD.width / 2, FIELD.height / 2, FIELD.height * 0.85,
+      );
+      edge.addColorStop(0, 'rgba(255, 42, 61, 0)');
+      edge.addColorStop(1, `rgba(255, 42, 61, ${danger})`);
+      context.fillStyle = edge;
+      context.fillRect(0, 0, FIELD.width, FIELD.height);
+    }
     if (flashAmount > 0) {
       context.fillStyle = `rgba(255, 60, 50, ${flashAmount * 0.22})`;
       context.fillRect(0, 0, FIELD.width, FIELD.height);
@@ -494,6 +826,9 @@ export function createRenderer(canvas, particles) {
       OVER_LINES[0] = finalLabel(state.score);
       OVER_LINES[1] = bestLabel(best);
       OVER_LINES[2] = isNewBest ? '★ NEW BEST! ★' : '';
+      OVER_LINES[3] = `STARS ${state.stats.stars}  ·  NEAR MISSES ${state.stats.near}  ·  KILLS ${state.stats.kills}`;
+      const overMult = state.stats.maxCombo >= 2 ? 1 + Math.floor(state.stats.maxCombo / COMBO.perStep) : 1;
+      OVER_LINES[4] = `MAX COMBO x${overMult} (${state.stats.maxCombo})  ·  REACHED WAVE ${state.wave}`;
       drawPanel('GAME OVER', OVER_LINES, 'Press Space or click to fly again', '#ff5a4e');
     }
   }

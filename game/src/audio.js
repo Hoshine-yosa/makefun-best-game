@@ -13,6 +13,10 @@ export function createAudio() {
   /** A minor-pentatonic walk, one note per eighth, at 112 bpm. */
   const MELODY = [220, 261.63, 293.66, 329.63, 392, 329.63, 293.66, 261.63];
   const BASS = [110, 110, 130.81, 98];
+  /** The dreadnought's theme: same pulse, a minor turn and a faster step. */
+  const MELODY_BOSS = [220, 261.63, 311.13, 392, 311.13, 261.63, 233.08, 196];
+  /** A bright arpeggio that fades in from wave 5, for the storm thickening. */
+  const ARP = [440, 554.37, 659.25, 880, 659.25, 554.37];
   const STEP_SECONDS = 60 / 112 / 2;
 
   /** Create (or wake) the context. Call from a user gesture. */
@@ -97,6 +101,25 @@ export function createAudio() {
     source.start(start);
   }
 
+  /** A meteor shattered: a short noise burst with a falling slide. */
+  function explode() {
+    slide(700, 90, 0, 0.25, 'sawtooth', 0.22);
+    noise(0, 0.18, 0.2, 1200);
+  }
+
+  /** The dreadnought dies: a long low boom. */
+  function bossDie() {
+    slide(220, 30, 0, 0.7, 'sawtooth', 0.32);
+    noise(0, 0.5, 0.3, 500);
+    tone(523.25, 0.1, 0.3, 'triangle', 0.16);
+    tone(783.99, 0.25, 0.4, 'triangle', 0.16);
+  }
+
+  /** One bolt fired: a quick bright zap. */
+  function shoot() {
+    slide(1400, 500, 0, 0.07, 'square', 0.07);
+  }
+
   /** A star caught: a bright blip that climbs a semitone per combo step. */
   function star(combo) {
     const step = Math.min(combo, 24);
@@ -142,21 +165,31 @@ export function createAudio() {
     tone(523.25, 0.16, 0.2, 'triangle', 0.2);
   }
 
-  /** Schedule the music a little ahead, called once a frame while playing. */
-  function updateMusic() {
+  /**
+   * Schedule the music a little ahead, called once a frame while playing.
+   * From wave 5 a bright arpeggio fades in over three waves; while the
+   * dreadnought lives the theme turns minor and the pulse runs ~40% faster.
+   * The sequencer is fixed (no randomness), so the music is the same every run.
+   */
+  function updateMusic(wave, bossAlive) {
     if (context === null || context.state !== 'running') return;
+    const stepSeconds = bossAlive ? STEP_SECONDS * 0.7 : STEP_SECONDS;
+    const melody = bossAlive ? MELODY_BOSS : MELODY;
+    const intensity = Math.min(1, Math.max(0, (wave - 4) / 3));
     while (nextNoteTime < context.currentTime + 0.25) {
       const step = musicStep % 8;
-      tone(MELODY[step], nextNoteTime - context.currentTime, 0.22, 'sine', 0.5, musicGain);
+      tone(melody[step], nextNoteTime - context.currentTime, 0.22, 'sine', 0.5, musicGain);
       if (step % 2 === 0) tone(BASS[(musicStep / 2) % 4 | 0], nextNoteTime - context.currentTime, 0.4, 'sine', 0.6, musicGain);
+      if (intensity > 0) tone(ARP[musicStep % ARP.length], nextNoteTime - context.currentTime, 0.16, 'triangle', 0.35 * intensity, musicGain);
       musicStep += 1;
-      nextNoteTime += STEP_SECONDS;
+      nextNoteTime += stepSeconds;
     }
   }
 
   return {
     unlock, setMuted, isMuted,
     star, nearMiss, hit, shieldBlock, powerup, wave, gameOver, start,
+    shoot, explode, bossDie,
     updateMusic,
   };
 }

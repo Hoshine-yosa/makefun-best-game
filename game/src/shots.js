@@ -1,17 +1,17 @@
 // The screenshot scenes behind ?shot=start|play|storm|end. Each one plays the real
 // rules forward from a fresh world for a fixed number of steps, steered by a simple
 // autopilot (look ahead each way the ship could move, keep clear of meteors, chase
-// the lowest star or orb when that is safe), so the frame is what a real game
-// looks like and the same seed always gives the same frame. The storm scene runs
-// longer, into the later waves, and stages a live combo with two power-ups up,
-// the way a good run looks at its busiest.
-import { FIELD, METEOR, SHIP, STEP } from './config.js';
-import { EVENT_OVER, KIND_METEOR } from './world.js';
+// the lowest star or orb when that is safe) that also holds the trigger down, so the
+// frame is what a real game looks like and the same seed always gives the same
+// frame. The storm scene runs into wave 5, where the dreadnought arrives, and stages
+// a live combo with power-ups up, the way a good run looks at its busiest.
+import { BOLT, FIELD, METEOR, POWERUP, SHIP, STEP } from './config.js';
+import { EVENT_OVER, KIND_BOLT, KIND_BOSS, KIND_METEOR, KIND_POWERUP, KIND_STAR } from './world.js';
 import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
 
 const START_SECONDS = 5;
-const PLAY_SECONDS = 24;
-const STORM_SECONDS = 58;
+const PLAY_SECONDS = 40;
+const STORM_SECONDS = 72;
 const END_LIMIT_SECONDS = 600;
 /**
  * How far ahead, in seconds, the autopilot checks each way it could move: the
@@ -63,7 +63,7 @@ function autopilot(state, horizon) {
       best = DIRECTIONS[index];
     }
   }
-  return { direction: best, pointerX: null };
+  return { direction: best, pointerX: null, firing: true };
 }
 
 /** Fill a few empty item slots with meteors high in the sky, for a crowded frame. */
@@ -88,7 +88,119 @@ function crowdSky(state, count, kinds) {
     item.angle = placed * 0.8;
     item.counted = false;
     item.nearMissed = true;
+    item.hp = def.hp;
+    item.phase = placed * 0.8;
     placed += 1;
+  }
+}
+
+/** Stage a few glowing stars in the upper field, for a livelier frame. */
+function stageStars(state, count) {
+  let placed = 0;
+  for (let index = 0; index < state.items.length && placed < count; index += 1) {
+    const item = state.items[index];
+    if (item.active) continue;
+    item.active = true;
+    item.kind = KIND_STAR;
+    item.sub = 'star';
+    item.width = 26;
+    item.height = 26;
+    item.x = 140 + placed * 330;
+    item.y = 110 + placed * 95;
+    item.speed = 205;
+    item.vx = 0;
+    item.spin = 0;
+    item.angle = 0;
+    item.counted = false;
+    item.nearMissed = false;
+    item.hp = 1;
+    item.phase = 0;
+    placed += 1;
+  }
+}
+
+/** Stage bolts mid-flight above the ship, so the frame shows the guns firing. */
+function stageBolts(state, count) {
+  let placed = 0;
+  for (let index = 0; index < state.items.length && placed < count; index += 1) {
+    const item = state.items[index];
+    if (item.active) continue;
+    item.active = true;
+    item.kind = KIND_BOLT;
+    item.sub = 'bolt';
+    item.width = BOLT.width;
+    item.height = BOLT.height;
+    item.x = state.ship.x + state.ship.width / 2 - BOLT.width / 2 + (placed - 1) * 56;
+    item.y = state.ship.y - 130 - placed * 80;
+    item.speed = -BOLT.speed;
+    item.vx = 0;
+    item.spin = 0;
+    item.angle = 0;
+    item.counted = true;
+    item.nearMissed = true;
+    item.hp = 0;
+    item.phase = 0;
+    placed += 1;
+  }
+}
+
+/** Stage one power-up orb at a fixed spot, for a livelier frame. */
+function stagePowerup(state, name, x, y) {
+  for (let index = 0; index < state.items.length; index += 1) {
+    const item = state.items[index];
+    if (item.active) continue;
+    item.active = true;
+    item.kind = KIND_POWERUP;
+    item.sub = name;
+    item.width = POWERUP.size;
+    item.height = POWERUP.size;
+    item.x = x;
+    item.y = y;
+    item.speed = POWERUP.speed;
+    item.vx = 0;
+    item.spin = 0;
+    item.angle = 0;
+    item.counted = false;
+    item.nearMissed = false;
+    item.hp = 1;
+    item.phase = 0;
+    return;
+  }
+}
+
+/** Force a damaged dreadnought into the frame (the sim's own boss may already be dead). */
+function stageBoss(state) {
+  if (state.boss !== null && state.boss.active) {
+    // Pin it to the left of the planet, so the bar never collides with the HUD
+    // and the ringed planet stays visible beside it, not behind it.
+    state.boss.x = 330;
+    state.boss.y = 110;
+    state.bossHp = 8;
+    state.boss.hp = 8;
+    return;
+  }
+  for (let index = 0; index < state.items.length; index += 1) {
+    const item = state.items[index];
+    if (item.active) continue;
+    item.active = true;
+    item.kind = KIND_BOSS;
+    item.sub = 'boss';
+    item.width = 220;
+    item.height = 150;
+    item.x = 330;
+    item.y = 110;
+    item.speed = 0;
+    item.vx = 0;
+    item.spin = 0;
+    item.angle = 0;
+    item.counted = true;
+    item.nearMissed = true;
+    item.hp = 8;
+    item.phase = 0;
+    state.boss = item;
+    state.bossHp = 8;
+    state.bossMaxHp = 20;
+    return;
   }
 }
 
@@ -100,8 +212,10 @@ export function stageShot(name, world) {
   world.reset();
   if (name !== 'play' && name !== 'storm' && name !== 'end') {
     for (let index = 0; index < START_SECONDS / STEP; index += 1) {
-      world.step(STEP, { direction: 0, pointerX: null }, true);
+      world.step(STEP, { direction: 0, pointerX: null, firing: false }, true);
     }
+    crowdSky(world.state, 4, ['rock', 'shard', 'rock', 'boulder']);
+    stageStars(world.state, 3);
     return { screen: SCREEN_TITLE, best: 0 };
   }
   if (name === 'storm') {
@@ -109,18 +223,41 @@ export function stageShot(name, world) {
       world.step(STEP, autopilot(world.state, HORIZON_GOOD), false);
       if (world.state.lives === 0) break;
     }
-    // A good run at its busiest: a live combo, two power-ups running, a full sky.
-    world.state.combo = 14;
+    // A good run at its busiest: a live combo, power-ups running, a full sky, the boss.
+    world.state.combo = 18;
     world.state.comboTimer = 3.5;
+    world.state.shield = true;
     world.state.magnetTimer = 6;
+    world.state.slowTimer = 5;
     world.state.doubleTimer = 8;
-    crowdSky(world.state, 5, ['rock', 'shard', 'rock', 'boulder', 'shard']);
+    world.state.spreadTimer = 8;
+    world.state.frenzyTimer = 6;
+    crowdSky(world.state, 10, ['rock', 'shard', 'dart', 'weaver', 'boulder', 'splitter', 'brute', 'shard', 'rock', 'weaver']);
+    stageStars(world.state, 4);
+    stageBolts(world.state, 3);
+    stagePowerup(world.state, 'bomb', 950, 320);
+    stageBoss(world.state);
     return { screen: SCREEN_PLAY, best: world.state.score };
   }
   const limit = name === 'end' ? END_LIMIT_SECONDS : PLAY_SECONDS;
   const horizon = name === 'end' ? HORIZON_END : HORIZON_GOOD;
   for (let index = 0; index < limit / STEP; index += 1) {
     if (world.step(STEP, autopilot(world.state, horizon), false) & EVENT_OVER) break;
+  }
+  if (name === 'play') {
+    world.state.combo = 8;
+    world.state.comboTimer = 3;
+    world.state.magnetTimer = 6;
+    crowdSky(world.state, 4, ['rock', 'shard', 'dart', 'rock']);
+    stageStars(world.state, 3);
+    stageBolts(world.state, 2);
+  }
+  if (name === 'end' && world.state.boss !== null) {
+    // The boss is gone by the time the panel goes up; a health bar peeking
+    // from behind the panel reads as a bug, as does its warning banner.
+    world.state.boss.active = false;
+    world.state.boss = null;
+    world.state.bossHp = 0;
   }
   const over = world.state.lives === 0;
   return { screen: over ? SCREEN_OVER : SCREEN_PLAY, best: world.state.score };

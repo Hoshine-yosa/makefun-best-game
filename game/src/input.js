@@ -17,6 +17,8 @@ const MUTE = new Set(['KeyM']);
 export function createInput(target) {
   let left = false;
   let right = false;
+  let fireKey = false;
+  let firePointer = false;
   let actions = 0;
   /** The pointer's x in field coordinates, or null when the keyboard steers. */
   let pointerX = null;
@@ -30,6 +32,8 @@ export function createInput(target) {
       pointerX = null;
     } else if (CONFIRM.has(event.code)) {
       if (!event.repeat) actions |= ACTION_CONFIRM;
+      // Holding Space fires the guns while playing.
+      if (event.code === 'Space') fireKey = true;
     } else if (PAUSE.has(event.code)) {
       if (!event.repeat) actions |= ACTION_PAUSE;
     } else if (MUTE.has(event.code)) {
@@ -40,15 +44,25 @@ export function createInput(target) {
   window.addEventListener('keyup', (event) => {
     if (LEFT.has(event.code)) left = false;
     else if (RIGHT.has(event.code)) right = false;
+    else if (event.code === 'Space') fireKey = false;
   });
   // A key released while the tab is hidden never sends keyup: let go of everything on blur.
   window.addEventListener('blur', () => {
     left = false;
     right = false;
+    fireKey = false;
+    firePointer = false;
   });
   target.addEventListener('pointerdown', (event) => {
     actions |= ACTION_CONFIRM;
     pointerX = pointerFieldX(event);
+    firePointer = true;
+  });
+  target.addEventListener('pointerup', () => {
+    firePointer = false;
+  });
+  target.addEventListener('pointercancel', () => {
+    firePointer = false;
   });
   target.addEventListener('pointermove', (event) => {
     if (event.buttons > 0 || event.pointerType === 'mouse') pointerX = pointerFieldX(event);
@@ -66,6 +80,10 @@ export function createInput(target) {
     /** -1 for left, 1 for right, 0 for neither or both. */
     direction() {
       return (right ? 1 : 0) - (left ? 1 : 0);
+    },
+    /** True while Space or the pointer is held: the ship fires. */
+    firing() {
+      return fireKey || firePointer;
     },
     /** The pointer target, or null when the keyboard is steering. */
     pointerTarget() {
